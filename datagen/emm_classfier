@@ -1,0 +1,43 @@
+# ============================================================
+# EMISSION CLASSIFIER DATASET
+# ============================================================
+import numpy as np
+import pandas as pd
+import os
+
+def generate_emission_dataset(N=7000, seed=42):
+    np.random.seed(seed)
+
+    production_load     = np.random.uniform(0.3, 1.0, N)
+    cycle_time          = np.random.uniform(20, 80, N)
+    machine_temperature = np.random.uniform(30, 120, N)
+    axis_speed          = np.random.uniform(0.2, 3.0, N)
+    power_factor        = np.random.uniform(0.5, 1.0, N)
+
+    emission_score = (
+        18 * production_load +
+        0.03 * machine_temperature +
+        0.45 * axis_speed +
+        0.03 * cycle_time +
+        np.random.normal(0, 1.0, N)
+    )
+
+    labels = pd.cut(emission_score, bins=3, labels=["Low", "Medium", "High"])
+
+    df = pd.DataFrame({
+        "production_load": production_load,
+        "cycle_time": cycle_time,
+        "machine_temperature": machine_temperature,
+        "axis_speed": axis_speed,
+        "power_factor": power_factor,
+        "emission_class": labels
+    })
+
+    os.makedirs("training_data/emission", exist_ok=True)
+    df.to_csv("training_data/emission/emission_raw.csv", index=False)
+    print("Saved training_data/emission/emission_raw.csv")
+
+    return df
+
+
+df = generate_emission_dataset()

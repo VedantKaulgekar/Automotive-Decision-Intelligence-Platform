@@ -1,0 +1,14 @@
+streamlit
+numpy
+pandas
+scikit-learn
+faiss-cpu
+sentence-transformers
+langchain
+langchain-community
+matplotlib
+pypdf
+reportlab
+joblib
+seaborn
+python-dotenv
