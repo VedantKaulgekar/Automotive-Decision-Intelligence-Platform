@@ -128,25 +128,23 @@ tab1, tab2, tab3, tab4 = st.tabs([
 import os
 import streamlit as st
 
-MODEL_PATHS = {
-    "Energy Model": "/mount/data/models/energy_model.pkl",
-    "Efficiency Model": "/mount/data/models/efficiency_model.pkl",
-    "Emission Model": "/mount/data/models/emission_model.pkl",
-    "Maintenance Model": "/mount/data/models/maintenance_model.pkl",
-}
-
-
-def missing_models():
-    return [name for name, path in MODEL_PATHS.items() if not os.path.exists(path)]
-
-missing = missing_models()
+# Check if models exist in session_state
+missing = []
+if "energy_model" not in st.session_state:
+    missing.append("Energy Model")
+if "efficiency_model" not in st.session_state:
+    missing.append("Efficiency Model")
+if "emission_model" not in st.session_state:
+    missing.append("Emission Model")
+if "maintenance_model" not in st.session_state:
+    missing.append("Maintenance Model")
 
 if missing:
     st.warning(
-        f"⚠ The following models are missing and the dashboard cannot run:\n\n"
-        + "\n".join([f"- **{m}**" for m in missing])
+        "⚠ The following models are missing:\n\n" +
+        "\n".join(f"- **{m}**" for m in missing)
     )
-    st.info("➡ Please go to **Model Training Studio** to train and save the models.")
+    st.info("➡ Please go to **Model Training Studio** and train the models.")
     st.stop()
 
 # ====================================================================================================
@@ -220,7 +218,7 @@ with tab1:
 
     # Training heatmap
     try:
-        df = pd.read_csv(PATHS["training_data"] + "/energy/energy_raw.csv")
+        df = st.session_state.get("energy_raw_data")
 
         fig_corr, ax3 = plt.subplots(figsize=(6, 4))
         sns.heatmap(df.corr(numeric_only=True), cmap="coolwarm", ax=ax3)
@@ -289,7 +287,7 @@ with tab2:
         )
     # Visuals
     try:
-        df = pd.read_csv(PATHS["training_data"] + "/efficiency/eff_raw.csv")
+        df = st.session_state.get("efficiency_raw_data")
 
         fig_eff, ax = plt.subplots(figsize=(6, 3))
         sns.countplot(x=df["efficiency_class"], ax=ax)
@@ -347,7 +345,7 @@ with tab3:
 
     # Visuals
     try:
-        df = pd.read_csv(PATHS["training_data"] + "/emission/emission_raw.csv")
+        df = st.session_state.get("emission_raw_data")
 
         fig_em, ax = plt.subplots(figsize=(6, 3))
         sns.countplot(x=df["emission_class"], ax=ax)
@@ -404,7 +402,7 @@ with tab4:
 
     # Visuals
     try:
-        df = pd.read_csv(PATHS["training_data"] + "/maintenance/maintenance_raw.csv")
+        df = st.session_state.get("maintenance_raw_data")
 
         fig_mt, ax = plt.subplots(figsize=(6, 3))
         sns.countplot(x=df["maintenance_class"], ax=ax)

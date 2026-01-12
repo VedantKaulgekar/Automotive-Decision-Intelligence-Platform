@@ -30,7 +30,6 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase import pdfmetrics
 
-os.makedirs("/mount/data/models", exist_ok=True)
 
 # ------------------------------------------------------------
 # SETUP
@@ -68,6 +67,7 @@ def save_metadata(feature_order, df, model_name):
 # AUTO ML — ENERGY REGRESSION
 # ------------------------------------------------------------
 def train_energy(df, target):
+    st.session_state[f"energy_raw_data"] = df.copy()
     X = df.drop(columns=[target])
     y = df[target]
 
@@ -98,8 +98,12 @@ def train_energy(df, target):
     }
 
     # Save
-    joblib.dump(best_model, "/mount/data/models/energy_model.pkl")
-    save_metadata(list(X.columns), X, "energy")
+    st.session_state["energy_model"] = best_model
+    st.session_state["energy_metadata"] = {
+        "feature_order": list(X.columns)
+    }
+    
+
 
     return best_model, metrics
 
@@ -107,7 +111,8 @@ def train_energy(df, target):
 # ------------------------------------------------------------
 # AUTO ML — CLASSIFIERS
 # ------------------------------------------------------------
-def train_classifier(df, target, model_path, name):
+def train_classifier(df, target, name):
+    st.session_state[f"{name}_raw_data"] = df.copy()
     X = df.drop(columns=[target])
     y = df[target]
 
@@ -139,8 +144,12 @@ def train_classifier(df, target, model_path, name):
         "report": classification_report(y, best_model.predict(X), output_dict=True)
     }
 
-    joblib.dump(best_model, model_path)
-    save_metadata(list(X.columns), X, name)
+    st.session_state[f"{name}_model"] = best_model
+    st.session_state[f"{name}_metadata"] = {
+        "feature_order": list(X.columns)
+    }
+
+
 
     return best_model, metrics
 
@@ -204,7 +213,7 @@ def export_pdf(title, metrics, figs):
 # ------------------------------------------------------------
 # TAB HANDLER
 # ------------------------------------------------------------
-def handle_tab(upload_key, model_title, train_fn, model_path, model_name):
+def handle_tab(upload_key, model_title, train_fn, model_name):
 
     uploaded = st.file_uploader(
         f"Upload dataset for **{model_title}**",
@@ -277,7 +286,6 @@ with tab1:
         upload_key="energy_data",
         model_title="Energy Prediction Model",
         train_fn=lambda df, t: train_energy(df, t),
-        model_path="/mount/data/models/energy_model.pkl",
         model_name="energy"
     )
 
@@ -285,8 +293,7 @@ with tab2:
     handle_tab(
         upload_key="efficiency_data",
         model_title="Efficiency Classifier",
-        train_fn=lambda df, t: train_classifier(df, t, "/mount/data/models/efficiency_model.pkl", "efficiency"),
-        model_path="/mount/data/models/efficiency_model.pkl",
+        train_fn=lambda df, t: train_classifier(df, t, None, "efficiency"),
         model_name="efficiency"
     )
 
@@ -294,8 +301,7 @@ with tab3:
     handle_tab(
         upload_key="emission_data",
         model_title="Emission Classifier",
-        train_fn=lambda df, t: train_classifier(df, t, "/mount/data/models/emission_model.pkl", "emission"),
-        model_path="/mount/data/models/emission_model.pkl",
+        train_fn=lambda df, t: train_classifier(df, t, None, "emission"),
         model_name="emission"
     )
 
@@ -303,7 +309,6 @@ with tab4:
     handle_tab(
         upload_key="maintenance_data",
         model_title="Maintenance DL Model",
-        train_fn=lambda df, t: train_classifier(df, t, "/mount/data/models/maintenance_model.pkl", "maintenance"),
-        model_path="/mount/data/models/maintenance_dl.pkl",
+        train_fn=lambda df, t: train_classifier(df, t, None, "maintenance"),
         model_name="maintenance"
     )
