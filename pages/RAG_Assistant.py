@@ -1,7 +1,18 @@
 import streamlit as st
 from modules.rag_engine import query_rag
-from langchain_community.llms import Ollama
 from modules.pdf_generator import generate_rag_report
+import os
+
+# Auto-detect cloud vs local
+USE_GROQ = "GROQ_API_KEY" in os.environ
+
+if USE_GROQ:
+    from groq import Groq
+    groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+else:
+    from langchain_community.llms import Ollama
+    ollama_client = Ollama(model="mistral", temperature=0)
+
 
 st.set_page_config(page_title="RAG Assistant", layout="wide")
 st.title("🤖 RAG Assistant (Powered by Mistral)")
@@ -67,8 +78,6 @@ if st.button("Search"):
         for c in clean_chunks
     )
 
-    llm = Ollama(model="mistral", temperature=0)
-
     # ------------------------------------------
     # LLM CALL
     # ------------------------------------------
@@ -92,7 +101,21 @@ Provide:
 1. A precise answer using only the snippets.
 2. Cite the snippet sources you used.
 """
-        ans = llm.invoke(prompt)
+    with st.spinner("🤖 Generating answer…"):
+    
+        if USE_GROQ:
+            # Cloud → Groq LLaMA-3 70B
+            response = groq_client.chat.completions.create(
+                model="llama3-70b-8192",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0
+            )
+            ans = response.choices[0].message.content
+    
+        else:
+            # Localhost → Ollama Mistral
+            ans = ollama_client.invoke(prompt)
+
 
     st.session_state.answer = ans
     st.session_state.sources = clean_chunks

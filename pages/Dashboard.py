@@ -34,6 +34,7 @@ warnings = __import__("warnings")
 warnings.filterwarnings("ignore")
 
 
+
 # ============================================================================================
 # PAGE SETUP
 # ============================================================================================
@@ -122,6 +123,28 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "⚡ Energy", "📈 Efficiency", "🌍 Emissions", "🛠 Maintenance"
 ])
 
+import os
+import streamlit as st
+
+MODEL_PATHS = {
+    "Energy Model": "models/energy_model.pkl",
+    "Efficiency Model": "models/efficiency_model.pkl",
+    "Emission Model": "models/emission_model.pkl",
+    "Maintenance Model": "models/maintenance_model.pkl",
+}
+
+def missing_models():
+    return [name for name, path in MODEL_PATHS.items() if not os.path.exists(path)]
+
+missing = missing_models()
+
+if missing:
+    st.warning(
+        f"⚠ The following models are missing and the dashboard cannot run:\n\n"
+        + "\n".join([f"- **{m}**" for m in missing])
+    )
+    st.info("➡ Please go to **Model Training Studio** to train and save the models.")
+    st.stop()
 
 # ====================================================================================================
 # TAB 1 - ENERGY
