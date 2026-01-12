@@ -126,7 +126,7 @@ with col4:
     <div class="feature-card">
         <div class="small-icon">🚀</div>
         <h4>Optimization Engine</h4>
-        <p>Fast random search + Bayesian optimization for minimization of energy, emissions & maintenance risk.</p>
+        <p>Fast random search for minimization of energy, emissions & maintenance risk.</p>
     </div>
     """, unsafe_allow_html=True)
 

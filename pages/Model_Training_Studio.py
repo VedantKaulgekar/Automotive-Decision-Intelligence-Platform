@@ -278,7 +278,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "⚡ Energy Model",
     "📈 Efficiency Classifier",
     "🌍 Emission Classifier",
-    "🛠 Maintenance DL"
+    "🛠 Maintenance"
 ])
 
 with tab1:
@@ -308,7 +308,7 @@ with tab3:
 with tab4:
     handle_tab(
         upload_key="maintenance_data",
-        model_title="Maintenance DL Model",
+        model_title="Maintenance Model",
         train_fn=lambda df, t: train_classifier(df, t, "maintenance"),
         model_name="maintenance"
     )

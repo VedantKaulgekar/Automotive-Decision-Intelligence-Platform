@@ -332,7 +332,7 @@ with tab3:
 
     best_em = st.session_state.optim["em"]
 
-    if best_energy:
+    if best_em:
         st.success(
             f"**Optimal Settings →** Load={best_energy['load']:.2f}, "
             f"Cycle={best_energy['cycle']:.1f}, Temp={best_energy['temp']:.1f}, "
@@ -389,7 +389,7 @@ with tab4:
 
     best_m = st.session_state.optim["maint"]
 
-    if best_energy:
+    if best_m:
         st.success(
             f"**Optimal Settings →** Load={best_energy['load']:.2f}, "
             f"Cycle={best_energy['cycle']:.1f}, Temp={best_energy['temp']:.1f}, "
