@@ -15,7 +15,7 @@ else:
 
 
 st.set_page_config(page_title="RAG Assistant", layout="wide")
-st.title("🤖 RAG Assistant (Powered by Mistral)")
+st.title("🤖 RAG Assistant")
 
 # -------------------------------------
 # SESSION STATE INIT
@@ -81,7 +81,7 @@ if st.button("Search"):
     # ------------------------------------------
     # LLM CALL
     # ------------------------------------------
-    with st.spinner("🤖 Mistral is thinking…"):
+    with st.spinner("🤖 AI is thinking…"):
         prompt = f"""
 You are an automotive compliance assistant.
 
@@ -102,7 +102,7 @@ Provide:
 2. Cite the snippet sources you used.
 """
     with st.spinner("🤖 Generating answer…"):
-    
+
         if USE_GROQ:
             # Cloud → Groq LLaMA-3 70B
             response = groq_client.chat.completions.create(
@@ -111,7 +111,7 @@ Provide:
                 temperature=0
             )
             ans = response.choices[0].message.content
-    
+
         else:
             # Localhost → Ollama Mistral
             ans = ollama_client.invoke(prompt)
