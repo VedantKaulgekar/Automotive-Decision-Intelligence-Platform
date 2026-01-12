@@ -106,7 +106,7 @@ Provide:
         if USE_GROQ:
             # Cloud → Groq LLaMA-3 70B
             response = groq_client.chat.completions.create(
-                model="llama3-70b-8192",
+                model="llama-3.1-8b-instant",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0
             )
