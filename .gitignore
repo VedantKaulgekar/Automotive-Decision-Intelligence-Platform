@@ -2,5 +2,3 @@ models/
 *.pkl
 *.pickle
 *.pt
-*.csv
-*.pdf
