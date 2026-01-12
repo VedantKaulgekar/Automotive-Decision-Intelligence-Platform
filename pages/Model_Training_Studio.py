@@ -60,7 +60,7 @@ def save_metadata(feature_order, df, model_name):
         "feature_means": df.mean(numeric_only=True).to_dict()
     }
 
-    joblib.dump(metadata, f"models/{model_name}_metadata.pkl")
+    joblib.dump(metadata, f"/mount/data/models/{model_name}_metadata.pkl")
 
 
 # ------------------------------------------------------------
@@ -97,7 +97,7 @@ def train_energy(df, target):
     }
 
     # Save
-    joblib.dump(best_model, "models/energy_model.pkl")
+    joblib.dump(best_model, "/mount/data/models/energy_model.pkl")
     save_metadata(list(X.columns), X, "energy")
 
     return best_model, metrics
@@ -275,8 +275,8 @@ with tab1:
     handle_tab(
         upload_key="energy_data",
         model_title="Energy Prediction Model",
-        train_fn=train_energy,
-        model_path="models/energy_model.pkl",
+        train_fn=lambda df, t: train_energy(df, t),
+        model_path="/mount/data/models/energy_model.pkl",
         model_name="energy"
     )
 
@@ -284,8 +284,8 @@ with tab2:
     handle_tab(
         upload_key="efficiency_data",
         model_title="Efficiency Classifier",
-        train_fn=lambda df, t: train_classifier(df, t, "models/efficiency_classifier.pkl", "efficiency"),
-        model_path="models/efficiency_classifier.pkl",
+        train_fn=lambda df, t: train_classifier(df, t, "/mount/data/models/efficiency_model.pkl", "efficiency"),
+        model_path="/mount/data/models/efficiency_model.pkl",
         model_name="efficiency"
     )
 
@@ -293,8 +293,8 @@ with tab3:
     handle_tab(
         upload_key="emission_data",
         model_title="Emission Classifier",
-        train_fn=lambda df, t: train_classifier(df, t, "models/emission_classifier.pkl", "emission"),
-        model_path="models/emission_classifier.pkl",
+        train_fn=lambda df, t: train_classifier(df, t, "/mount/data/models/emission_model.pkl", "emission"),
+        model_path="/mount/data/models/emission_model.pkl",
         model_name="emission"
     )
 
@@ -302,7 +302,7 @@ with tab4:
     handle_tab(
         upload_key="maintenance_data",
         model_title="Maintenance DL Model",
-        train_fn=lambda df, t: train_classifier(df, t, "models/maintenance_dl.pkl", "maintenance"),
-        model_path="models/maintenance_dl.pkl",
+        train_fn=lambda df, t: train_classifier(df, t, "/mount/data/models/maintenance_model.pkl", "maintenance"),
+        model_path="/mount/data/models/maintenance_dl.pkl",
         model_name="maintenance"
     )

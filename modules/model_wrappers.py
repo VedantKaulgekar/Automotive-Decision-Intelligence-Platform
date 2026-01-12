@@ -33,8 +33,8 @@ class EnergyModel:
         "power_factor": 0.9
     }
 
-    MODEL_PATH = "models/energy_model.pkl"
-    META_PATH = "models/energy_metadata.pkl"
+    MODEL_PATH = "/mount/data/models/energy_model.pkl"
+    META_PATH  = "/mount/data/models/energy_metadata.pkl"
 
     def __init__(self):
         self.model = joblib.load(self.MODEL_PATH) if os.path.exists(self.MODEL_PATH) else None
@@ -79,8 +79,9 @@ class EfficiencyModel:
         "power_factor": 0.9,
     }
 
-    MODEL_PATH = "models/efficiency_classifier.pkl"
-    META_PATH = "models/efficiency_metadata.pkl"
+    MODEL_PATH = "/mount/data/models/efficiency_model.pkl"
+    META_PATH  = "/mount/data/models/efficiency_metadata.pkl"
+
 
     def __init__(self):
         self.model = joblib.load(self.MODEL_PATH) if os.path.exists(self.MODEL_PATH) else None
@@ -121,8 +122,9 @@ class EmissionModel:
         "power_factor": 0.9
     }
 
-    MODEL_PATH = "models/emission_classifier.pkl"
-    META_PATH = "models/emission_metadata.pkl"
+    MODEL_PATH = "/mount/data/models/emission_model.pkl"
+    META_PATH  = "/mount/data/models/emission_metadata.pkl"
+
 
     def __init__(self):
         self.model = joblib.load(self.MODEL_PATH) if os.path.exists(self.MODEL_PATH) else None
@@ -165,8 +167,9 @@ class MaintenanceModel:
         "pressure": 100,
     }
 
-    MODEL_PATH = "models/maintenance_dl.pkl"
-    META_PATH = "models/maintenance_metadata.pkl"
+    MODEL_PATH = "/mount/data/models/maintenance_model.pkl"
+    META_PATH  = "/mount/data/models/maintenance_metadata.pkl"
+    
 
     def __init__(self):
         self.model = joblib.load(self.MODEL_PATH) if os.path.exists(self.MODEL_PATH) else None

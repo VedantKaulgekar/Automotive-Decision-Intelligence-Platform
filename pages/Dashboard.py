@@ -33,6 +33,7 @@ from reportlab.pdfbase import pdfmetrics
 warnings = __import__("warnings")
 warnings.filterwarnings("ignore")
 
+MODEL_DIR = "/mount/data/models"
 
 
 # ============================================================================================
@@ -127,11 +128,12 @@ import os
 import streamlit as st
 
 MODEL_PATHS = {
-    "Energy Model": "models/energy_model.pkl",
-    "Efficiency Model": "models/efficiency_model.pkl",
-    "Emission Model": "models/emission_model.pkl",
-    "Maintenance Model": "models/maintenance_model.pkl",
+    "Energy Model": "/mount/data/models/energy_model.pkl",
+    "Efficiency Model": "/mount/data/models/efficiency_model.pkl",
+    "Emission Model": "/mount/data/models/emission_model.pkl",
+    "Maintenance Model": "/mount/data/models/maintenance_model.pkl",
 }
+
 
 def missing_models():
     return [name for name, path in MODEL_PATHS.items() if not os.path.exists(path)]
