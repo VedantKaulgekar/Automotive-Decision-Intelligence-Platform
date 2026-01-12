@@ -293,7 +293,7 @@ with tab2:
     handle_tab(
         upload_key="efficiency_data",
         model_title="Efficiency Classifier",
-        train_fn=lambda df, t: train_classifier(df, t, None, "efficiency"),
+        train_fn=lambda df, t: train_classifier(df, t, "efficiency"),
         model_name="efficiency"
     )
 
@@ -301,7 +301,7 @@ with tab3:
     handle_tab(
         upload_key="emission_data",
         model_title="Emission Classifier",
-        train_fn=lambda df, t: train_classifier(df, t, None, "emission"),
+        train_fn=lambda df, t: train_classifier(df, t, "emission"),
         model_name="emission"
     )
 
@@ -309,6 +309,6 @@ with tab4:
     handle_tab(
         upload_key="maintenance_data",
         model_title="Maintenance DL Model",
-        train_fn=lambda df, t: train_classifier(df, t, None, "maintenance"),
+        train_fn=lambda df, t: train_classifier(df, t, "maintenance"),
         model_name="maintenance"
     )
