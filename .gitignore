@@ -1,4 +1,4 @@
-models/
+
 *.pkl
 *.pickle
 *.pt
