@@ -30,6 +30,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase import pdfmetrics
 
+os.makedirs("/mount/data/models", exist_ok=True)
 
 # ------------------------------------------------------------
 # SETUP

@@ -32,6 +32,7 @@ from reportlab.pdfbase import pdfmetrics
 
 warnings = __import__("warnings")
 warnings.filterwarnings("ignore")
+os.makedirs("/mount/data/models", exist_ok=True)
 
 MODEL_DIR = "/mount/data/models"
 
