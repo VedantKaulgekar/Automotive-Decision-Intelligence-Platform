@@ -12,3 +12,5 @@ reportlab
 joblib
 seaborn
 python-dotenv
+fuzzywuzzy
+python-Levenshtein
