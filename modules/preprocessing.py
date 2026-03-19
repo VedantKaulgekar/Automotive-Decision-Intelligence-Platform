@@ -12,7 +12,13 @@ def load_dataset(uploaded_file):
     elif filename.endswith(".xlsx") or filename.endswith(".xls"):
         return pd.read_excel(uploaded_file)
     else:
-        raise ValueError("Unsupported file format. Upload CSV or Excel file.")
+        ext = filename.rsplit(".", 1)[-1].upper() if "." in filename else "unknown"
+        raise ValueError(
+            f"Unsupported file format: .{ext}\n\n"
+            "Only CSV (.csv) and Excel (.xlsx, .xls) files are accepted for model training.\n"
+            "If your data is in a PDF or another format, please export it to CSV or Excel first, "
+            "then re-upload."
+        )
 
 
 def preprocess(df):
@@ -36,5 +42,3 @@ def preprocess(df):
     cleaned_full = pd.concat([cleaned, non_numeric], axis=1)
 
     return cleaned_full, scaled, imputer, scaler
-
-
