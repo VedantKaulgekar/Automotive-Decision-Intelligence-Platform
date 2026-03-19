@@ -109,7 +109,8 @@ def get_regression_candidates():
             LGBMRegressor(random_state=42, verbosity=-1),
             {"n_estimators": [100, 200, 300], "max_depth": [3, 5, 7],
              "learning_rate": [0.03, 0.05, 0.1], "num_leaves": [15, 31, 63],
-             "subsample": [0.7, 0.8, 1.0], "colsample_bytree": [0.6, 0.8, 1.0]}
+             "subsample": [0.7, 0.8, 1.0], "colsample_bytree": [0.6, 0.8, 1.0],
+             "bagging_freq": [1]}
         )
     return candidates
 
@@ -145,8 +146,7 @@ def get_classifier_candidates():
     }
     if HAS_XGB:
         candidates["XGBoost"] = (
-            XGBClassifier(random_state=42, verbosity=0, eval_metric="mlogloss",
-                          use_label_encoder=False),
+            XGBClassifier(random_state=42, verbosity=0, eval_metric="mlogloss"),
             {"n_estimators": [100, 200, 300], "max_depth": [3, 5, 7],
              "learning_rate": [0.03, 0.05, 0.1], "subsample": [0.7, 0.8, 1.0],
              "colsample_bytree": [0.6, 0.8, 1.0], "reg_alpha": [0, 0.1, 1.0]}
@@ -156,7 +156,8 @@ def get_classifier_candidates():
             LGBMClassifier(random_state=42, verbosity=-1),
             {"n_estimators": [100, 200, 300], "max_depth": [3, 5, 7],
              "learning_rate": [0.03, 0.05, 0.1], "num_leaves": [15, 31, 63],
-             "subsample": [0.7, 0.8, 1.0], "colsample_bytree": [0.6, 0.8, 1.0]}
+             "subsample": [0.7, 0.8, 1.0], "colsample_bytree": [0.6, 0.8, 1.0],
+             "bagging_freq": [1]}
         )
     return candidates
 
@@ -167,9 +168,25 @@ def get_classifier_candidates():
 def _train_one(name, model, param_dist, X_train, y_train, scoring, n_iter=10):
     """
     Train a single candidate with RandomizedSearchCV.
-    Returns (name, cv_score, fitted_model) or (name, -inf, None) on failure.
+    Returns (name, cv_score, fitted_model, error_msg).
+    On failure: cv_score=-inf, fitted_model=None, error_msg=str(e).
+
+    XGBoost and LightGBM require integer-encoded labels for multiclass.
+    We encode here and decode after — transparent to the rest of the pipeline.
     """
     from sklearn.model_selection import cross_val_score, RandomizedSearchCV
+    from sklearn.preprocessing import LabelEncoder
+    import numpy as np
+
+    # Encode string labels for XGB / LGBM (they need integer targets)
+    needs_encoding = name in ("XGBoost", "LightGBM") and y_train.dtype == object
+    le = None
+    if needs_encoding:
+        le = LabelEncoder()
+        y_fit = le.fit_transform(y_train)
+    else:
+        y_fit = y_train
+
     try:
         if param_dist:
             search = RandomizedSearchCV(
@@ -177,14 +194,42 @@ def _train_one(name, model, param_dist, X_train, y_train, scoring, n_iter=10):
                 n_iter=n_iter, cv=5, scoring=scoring,
                 random_state=42, n_jobs=-1
             )
-            search.fit(X_train, y_train)
-            return name, float(search.best_score_), search.best_estimator_
+            search.fit(X_train, y_fit)
+            fitted = search.best_estimator_
+            # Wrap the fitted model so .predict() returns original string labels
+            if le is not None:
+                fitted = _LabelDecodingWrapper(fitted, le)
+            return name, float(search.best_score_), fitted, None
         else:
-            scores = cross_val_score(model, X_train, y_train, cv=5, scoring=scoring)
-            model.fit(X_train, y_train)
-            return name, float(scores.mean()), model
+            scores = cross_val_score(model, X_train, y_fit, cv=5, scoring=scoring)
+            model.fit(X_train, y_fit)
+            fitted = _LabelDecodingWrapper(model, le) if le is not None else model
+            return name, float(scores.mean()), fitted, None
     except Exception as e:
-        return name, float("-inf"), None
+        return name, float("-inf"), None, str(e)
+
+
+class _LabelDecodingWrapper:
+    """
+    Thin wrapper around XGB/LGBM that decodes integer predictions
+    back to original string class labels, making it compatible with
+    the rest of the pipeline (confusion_matrix, classification_report etc.).
+    """
+    def __init__(self, model, le):
+        self._model = model
+        self._le    = le
+
+    def predict(self, X):
+        import numpy as np
+        raw = self._model.predict(X)
+        return self._le.inverse_transform(raw.astype(int))
+
+    def predict_proba(self, X):
+        return self._model.predict_proba(X)
+
+    # Forward all other attribute access to the wrapped model
+    def __getattr__(self, item):
+        return getattr(self._model, item)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -250,21 +295,32 @@ def _render_data_profile(df, target, placeholder):
                 st.plotly_chart(fig2, width="stretch")
 
 
-def _render_live_scoreboard(results_so_far, scoring_label, placeholder):
-    """Render a live bar chart of CV scores as candidates finish."""
+def _render_live_scoreboard(results_so_far, scoring_label, placeholder, failed_names=None):
+    """Render a live bar chart of CV scores as candidates finish.
+    Failed candidates shown as grey bars with ❌ label."""
+    failed_names = failed_names or []
     with placeholder.container():
-        if not results_so_far:
+        if not results_so_far and not failed_names:
             st.info("⏳ Waiting for first candidate to finish…")
             return
 
         names  = [r[0] for r in results_so_far]
-        scores = [max(r[1], 0) for r in results_so_far]   # clip negatives for display
-        colors = ["#27ae60" if s == max(scores) else "#4e8cff" for s in scores]
+        scores = [max(r[1], 0) for r in results_so_far]
+        best   = max(scores) if scores else 1
+        bar_colors = ["#27ae60" if s == best else "#4e8cff" for s in scores]
+        labels = [f"{s:.4f}" for s in scores]
+
+        # Append failed candidates as zero-score grey bars
+        for fn in failed_names:
+            names.append(f"❌ {fn}")
+            scores.append(0)
+            bar_colors.append("#888888")
+            labels.append("failed")
 
         fig = go.Figure(go.Bar(
             x=scores, y=names, orientation="h",
-            marker_color=colors,
-            text=[f"{s:.4f}" for s in scores],
+            marker_color=bar_colors,
+            text=labels,
             textposition="outside",
             hovertemplate="%{y}<br>CV Score: %{x:.4f}<extra></extra>"
         ))
@@ -272,8 +328,8 @@ def _render_live_scoreboard(results_so_far, scoring_label, placeholder):
             title=f"🏆 Live CV {scoring_label} Scoreboard",
             xaxis_title=scoring_label,
             height=max(200, 60 * len(names)),
-            margin=dict(t=50, b=30, l=130, r=60),
-            xaxis=dict(range=[0, max(scores) * 1.15 if scores else 1])
+            margin=dict(t=50, b=30, l=150, r=80),
+            xaxis=dict(range=[0, best * 1.2 if best else 1])
         )
         st.plotly_chart(fig, width="stretch")
 
@@ -308,22 +364,28 @@ def train_energy(df, target, profile_ph, progress_ph, scoreboard_ph, status_ph):
         }
 
         done_count = 0
+        failed = []
         for fut in concurrent.futures.as_completed(futures):
-            name, score, model = fut.result()
+            name, score, model, err = fut.result()
             done_count += 1
 
             if model is not None:
                 results.append((name, score, model))
+                progress_ph.progress(
+                    done_count / n_cands,
+                    text=f"✅ {name} done  ({done_count}/{n_cands})"
+                )
+            else:
+                failed.append((name, err))
+                progress_ph.progress(
+                    done_count / n_cands,
+                    text=f"❌ {name} failed  ({done_count}/{n_cands}): {err[:60] if err else 'unknown error'}"
+                )
 
-            # Update progress bar
-            progress_ph.progress(
-                done_count / n_cands,
-                text=f"✅ {name} done  ({done_count}/{n_cands})"
-            )
-
-            # Update live scoreboard
+            # Update live scoreboard (pass failed list for display)
             _render_live_scoreboard(
-                [(r[0], r[1]) for r in results], "R²", scoreboard_ph
+                [(r[0], r[1]) for r in results], "R²", scoreboard_ph,
+                failed_names=[f[0] for f in failed]
             )
 
     if not results:
@@ -386,19 +448,27 @@ def train_classifier(df, target, name, profile_ph, progress_ph, scoreboard_ph, s
         }
 
         done_count = 0
+        failed = []
         for fut in concurrent.futures.as_completed(futures):
-            cname, score, model = fut.result()
+            cname, score, model, err = fut.result()
             done_count += 1
 
             if model is not None:
                 results.append((cname, score, model))
+                progress_ph.progress(
+                    done_count / n_cands,
+                    text=f"✅ {cname} done  ({done_count}/{n_cands})"
+                )
+            else:
+                failed.append((cname, err))
+                progress_ph.progress(
+                    done_count / n_cands,
+                    text=f"❌ {cname} failed  ({done_count}/{n_cands}): {err[:60] if err else 'unknown error'}"
+                )
 
-            progress_ph.progress(
-                done_count / n_cands,
-                text=f"✅ {cname} done  ({done_count}/{n_cands})"
-            )
             _render_live_scoreboard(
-                [(r[0], r[1]) for r in results], "Accuracy", scoreboard_ph
+                [(r[0], r[1]) for r in results], "Accuracy", scoreboard_ph,
+                failed_names=[f[0] for f in failed]
             )
 
     if not results:
