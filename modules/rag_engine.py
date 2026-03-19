@@ -2,8 +2,12 @@ import os
 import pickle
 import faiss
 import numpy as np
+import threading
 from pypdf import PdfReader
-from fuzzywuzzy import fuzz
+try:
+    from thefuzz import fuzz
+except ImportError:
+    from fuzzywuzzy import fuzz  # fallback for older installs
 
 # -------------------------------------------------
 # PATH SETUP
@@ -21,6 +25,9 @@ META_PATH = os.path.join(RAG_INDEX_DIR, "meta.pkl")
 os.makedirs(RAG_INDEX_DIR, exist_ok=True)
 os.makedirs(GOV_LAWS_DIR, exist_ok=True)
 os.makedirs(USER_DOCS_DIR, exist_ok=True)
+
+# Global lock — prevents concurrent index rebuilds corrupting the index file
+_INDEX_LOCK = threading.Lock()
 
 # -------------------------------------------------
 # LOAD EMBEDDING MODEL
@@ -47,49 +54,69 @@ def load_pdf_text(path):
 
 
 # -------------------------------------------------
-# FULL REBUILD INDEX (simple + safe)
+# FULL REBUILD INDEX — chunks stored at build time
 # -------------------------------------------------
 def rebuild_full_index():
     print("🔄 Rebuilding full RAG index...")
 
-    docs = []
-    names = []
-
-    # Load GOV PDFs
-    for f in os.listdir(GOV_LAWS_DIR):
-        if f.endswith(".pdf"):
-            fp = os.path.join(GOV_LAWS_DIR, f)
-            txt = load_pdf_text(fp)
-            if txt.strip():
-                docs.append(txt)
-                names.append(f)
-
-    # Load USER PDFs
-    for f in os.listdir(USER_DOCS_DIR):
-        if f.endswith(".pdf"):
-            fp = os.path.join(USER_DOCS_DIR, f)
-            txt = load_pdf_text(fp)
-            if txt.strip():
-                docs.append(txt)
-                names.append(f)
-
-    if not docs or embedder is None:
+    # Prevent concurrent rebuilds from corrupting the index file
+    if not _INDEX_LOCK.acquire(blocking=False):
+        print("⚠ Index rebuild already in progress — skipping duplicate request.")
         return False
 
-    # Embed
-    vectors = embedder.encode(docs, show_progress_bar=True)
+    try:
+        chunks = []   # text of each chunk
+        sources = []  # source filename for each chunk
 
-    # Build FAISS index
-    index = faiss.IndexFlatL2(vectors.shape[1])
-    index.add(vectors)
+        def _chunk_text(text, min_len=40):
+            """Split document text into paragraph-level chunks."""
+            return [p.strip() for p in text.split("\n") if len(p.strip()) >= min_len]
 
-    faiss.write_index(index, INDEX_PATH)
+        # Load GOV PDFs
+        for f in sorted(os.listdir(GOV_LAWS_DIR)):
+            if f.endswith(".pdf"):
+                fp  = os.path.join(GOV_LAWS_DIR, f)
+                txt = load_pdf_text(fp)
+                if txt.strip():
+                    doc_chunks = _chunk_text(txt)
+                    chunks.extend(doc_chunks)
+                    sources.extend([f] * len(doc_chunks))
 
-    # Save metadata
-    with open(META_PATH, "wb") as f:
-        pickle.dump({"texts": docs, "names": names}, f)
+        # Load USER PDFs
+        for f in sorted(os.listdir(USER_DOCS_DIR)):
+            if f.endswith(".pdf"):
+                fp  = os.path.join(USER_DOCS_DIR, f)
+                txt = load_pdf_text(fp)
+                if txt.strip():
+                    doc_chunks = _chunk_text(txt)
+                    chunks.extend(doc_chunks)
+                    sources.extend([f] * len(doc_chunks))
 
-    return True
+        if not chunks or embedder is None:
+            return False
+
+        # Embed all chunks at build time
+        vectors = embedder.encode(chunks, show_progress_bar=True, batch_size=64)
+
+        # Normalise for cosine similarity via inner product
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        vectors_norm = vectors / np.where(norms == 0, 1, norms)
+
+        # Build FAISS index (inner product on normalised vecs = cosine similarity)
+        index = faiss.IndexFlatIP(vectors_norm.shape[1])
+        index.add(vectors_norm)
+
+        faiss.write_index(index, INDEX_PATH)
+
+        # Save chunk texts and sources (one entry per chunk)
+        with open(META_PATH, "wb") as f:
+            pickle.dump({"chunks": chunks, "sources": sources}, f)
+
+        print(f"✔ Index built: {len(chunks)} chunks from {len(set(sources))} documents.")
+        return True
+
+    finally:
+        _INDEX_LOCK.release()
 
 
 # -------------------------------------------------
@@ -134,77 +161,85 @@ def query_rag(query, k=5, threshold=0.45):
     if not kb_exists() or embedder is None:
         return "NO_INDEX", []
 
-    index = faiss.read_index(INDEX_PATH)
-
     with open(META_PATH, "rb") as f:
         meta = pickle.load(f)
 
-    texts = meta["texts"]
-    names = meta["names"]
+    # Detect old whole-document index format and rebuild automatically
+    if "texts" in meta and "chunks" not in meta:
+        print("⚠ Old index format detected — rebuilding with chunk-level vectors...")
+        ok = rebuild_full_index()
+        if not ok:
+            return "NO_INDEX", []
+        with open(META_PATH, "rb") as f:
+            meta = pickle.load(f)
 
-    # -----------------------------
-    # SPLIT INTO PARAGRAPHS
-    # -----------------------------
-    paras = []
-    sources = []
+    chunks  = meta.get("chunks",  [])
+    sources = meta.get("sources", [])
 
-    for text, src in zip(texts, names):
-        # Large chunks work better than tiny ones
-        ps = [p.strip() for p in text.split("\n") if len(p.strip()) > 40]
-        paras.extend(ps)
-        sources.extend([src] * len(ps))
-
-    if not paras:
+    if not chunks:
         return "NO_INDEX", []
+
+    index = faiss.read_index(INDEX_PATH)
 
     # -----------------------------
     # OPTIONAL FILE-NAME FILTERING
     # -----------------------------
     q = query.lower()
+    unique_sources = list(set(sources))
     doc_hits = []
 
-    for src in set(names):
+    for src in unique_sources:
         clean = src.lower().replace(".pdf", "")
         if clean in q or fuzz.partial_ratio(clean, q) > 80:
             doc_hits.append(src)
 
-    # Filter paragraphs ONLY if filename matched
     if doc_hits:
-        filtered = [(p, s) for p, s in zip(paras, sources) if s in doc_hits]
+        filtered = [(c, s) for c, s in zip(chunks, sources) if s in doc_hits]
         if filtered:
-            paras, sources = zip(*filtered)
-            paras = list(paras)
-            sources = list(sources)
+            f_chunks, f_sources = zip(*filtered)
+            f_vecs = embedder.encode(list(f_chunks))
+            norms  = np.linalg.norm(f_vecs, axis=1, keepdims=True)
+            f_vecs_norm = f_vecs / np.where(norms == 0, 1, norms)
+
+            q_vec      = embedder.encode([query])
+            q_vec_norm = q_vec / np.linalg.norm(q_vec)
+
+            scores = np.dot(f_vecs_norm, q_vec_norm.T).flatten()
+
+            if float(max(scores)) < threshold:
+                return "NO_RELEVANT", []
+
+            top = scores.argsort()[::-1][:k]
+            return "OK", [
+                {"source": f_sources[i], "paragraph": f_chunks[i], "score": float(scores[i])}
+                for i in top
+            ]
 
     # -----------------------------
-    # EMBEDDINGS
+    # FULL INDEX SEARCH via FAISS
     # -----------------------------
-    para_vecs = embedder.encode(paras)
-    query_vec = embedder.encode([query])
+    q_vec      = embedder.encode([query])
+    q_vec_norm = (q_vec / np.linalg.norm(q_vec)).astype("float32")
 
-    # Cosine similarity (better than dot product)
-    para_vecs_norm = para_vecs / np.linalg.norm(para_vecs, axis=1, keepdims=True)
-    query_vec_norm = query_vec / np.linalg.norm(query_vec)
-
-    scores = np.dot(para_vecs_norm, query_vec_norm.T).flatten()
-
-    # -----------------------------
-    # RELEVANCE CHECK
-    # -----------------------------
-    if max(scores) < threshold:
-        return "NO_RELEVANT", []
-
-    # -----------------------------
-    # TOP-K MATCHES
-    # -----------------------------
-    top = scores.argsort()[::-1][:k]
+    scores_faiss, indices = index.search(q_vec_norm, k * 2)
+    scores_faiss = scores_faiss[0]
+    indices      = indices[0]
 
     results = []
-    for i in top:
+    for score, idx in zip(scores_faiss, indices):
+        if idx < 0 or idx >= len(chunks):
+            continue
+        if float(score) < threshold:
+            continue
         results.append({
-            "source": sources[i],
-            "paragraph": paras[i],
-            "score": float(scores[i])
+            "source":    sources[idx],
+            "paragraph": chunks[idx],
+            "score":     float(score)
         })
+        if len(results) >= k:
+            break
+
+    if not results:
+        return "NO_RELEVANT", []
 
     return "OK", results

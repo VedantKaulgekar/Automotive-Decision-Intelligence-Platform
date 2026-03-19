@@ -3,13 +3,17 @@ from modules.rag_engine import query_rag
 from modules.pdf_generator import generate_rag_report
 import os
 
-# Auto-detect cloud vs local
-USE_GROQ = "GROQ_API_KEY" in os.environ
+# LLM backend: Groq (cloud) if API key is set, else Ollama/Mistral (local)
+USE_GROQ = "GROQ_API_KEY" in os.environ and os.environ["GROQ_API_KEY"].strip() != ""
 
 if USE_GROQ:
-    from groq import Groq
-    groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-else:
+    try:
+        from groq import Groq
+        groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    except ImportError:
+        USE_GROQ = False   # groq package not installed — fall back to Ollama
+
+if not USE_GROQ:
     from langchain_community.llms import Ollama
     ollama_client = Ollama(model="mistral", temperature=0)
 
@@ -103,8 +107,8 @@ Provide:
 """
     with st.spinner("🤖 Generating answer…"):
 
-        if USE_GROQ:
-            # Cloud → Groq LLaMA-3 70B
+        if USE_GROQ and groq_client:
+            # Cloud → Groq
             response = groq_client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[{"role": "user", "content": prompt}],
@@ -112,9 +116,17 @@ Provide:
             )
             ans = response.choices[0].message.content
 
-        else:
+        elif ollama_client:
             # Localhost → Ollama Mistral
             ans = ollama_client.invoke(prompt)
+
+        else:
+            st.error(
+                "❌ No LLM backend available. "
+                "Set a `GROQ_API_KEY` environment variable to use Groq, "
+                "or install and run Ollama locally (`pip install langchain-community`)."
+            )
+            st.stop()
 
 
     st.session_state.answer = ans

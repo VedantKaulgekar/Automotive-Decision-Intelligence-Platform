@@ -4,7 +4,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from io import BytesIO
-import joblib
 import os
 
 # Model Wrappers
@@ -365,14 +364,33 @@ if "optim" not in st.session_state:
 
 
 # ============================================================================================
+# SIDEBAR — CONFIGURABLE PARAMETERS
+# ============================================================================================
+with st.sidebar:
+    st.header("⚙️ Configuration")
+    st.caption("Adjust these to match your factory's local rates.")
+
+    price_rate = st.number_input(
+        "Electricity Price Rate (₹/kWh)",
+        min_value=1.0, max_value=50.0, value=10.0, step=0.5,
+        help="Your local electricity tariff. Default: ₹10/kWh."
+    )
+    co2_factor = st.number_input(
+        "Grid CO₂ Factor (kg CO₂/kWh)",
+        min_value=0.1, max_value=2.0, value=0.85, step=0.05,
+        help="CO₂ emitted per kWh from your regional grid. "
+             "India average ~0.82, coal-heavy ~1.0, renewables ~0.1."
+    )
+    st.divider()
+    st.caption("🔒 Settings apply to the current session only.")
+
+
+# ============================================================================================
 # TABS
 # ============================================================================================
 tab1, tab2, tab3, tab4 = st.tabs([
     "⚡ Energy", "📈 Efficiency", "🌍 Emissions", "🛠 Maintenance"
 ])
-
-import os
-import streamlit as st
 
 # Check if models exist in session_state
 missing = []
@@ -411,8 +429,8 @@ with tab1:
     energy = energy_model.predict(en_load, en_cycle, en_temp, en_speed)
 
     if energy:
-        cost = predict_cost(energy)
-        co2 = estimate_grid_emission(energy)
+        cost = predict_cost(energy, price_rate=price_rate)
+        co2  = estimate_grid_emission(energy, co2_factor=co2_factor)
 
         c1, c2, c3 = st.columns(3)
         c1.metric("Energy Consumption", f"{energy:.2f} kWh")
@@ -517,7 +535,7 @@ with tab1:
 
     if st.button("Run Grid Optimization (Min Energy)"):
         st.session_state.optim["energy"] = optimize_with_model(
-            energy_model, "min", n_samples=15
+            energy_model, "min"
         )
 
     best_energy = st.session_state.optim["energy"]
@@ -678,7 +696,7 @@ with tab2:
     st.subheader("🚀 Optimization")
 
     if st.button("Optimize Efficiency (Grid)", key="eff_grid"):
-        st.session_state.optim["eff"] = optimize_with_model(eff_model, "max", 15)
+        st.session_state.optim["eff"] = optimize_with_model(eff_model, "max")
 
     best_eff = st.session_state.optim["eff"]
 
@@ -815,7 +833,7 @@ with tab3:
     st.subheader("🚀 Optimization")
 
     if st.button("Minimize Emissions (Grid)", key="em_grid"):
-        st.session_state.optim["em"] = optimize_with_model(emiss_model, "min", 15)
+        st.session_state.optim["em"] = optimize_with_model(emiss_model, "min")
 
     best_em = st.session_state.optim["em"]
 
@@ -960,7 +978,7 @@ with tab4:
     st.subheader("🚀 Optimization")
     
     if st.button("Minimize Risk (Grid)", key="m_grid"):
-        st.session_state.optim["maint"] = optimize_with_model(maint_model, "min", 15)
+        st.session_state.optim["maint"] = optimize_with_model(maint_model, "min")
 
     best_m = st.session_state.optim["maint"]
 

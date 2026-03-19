@@ -1,5 +1,4 @@
 import numpy as np
-from itertools import product
 # -------------------------------------------------------------
 # FAST RANDOM OPTIMIZER (100x faster than grid search)
 # -------------------------------------------------------------

@@ -78,15 +78,38 @@ uploaded_paths = []
 if uploaded_files:
     st.subheader("📥 Uploading Files...")
 
+    skipped = []
+    saved   = []
+
     for file in uploaded_files:
         save_path = os.path.join(STORAGE_USER, file.name)
+
+        # Deduplication check
+        if os.path.exists(save_path):
+            skipped.append(file.name)
+            continue
+
         with open(save_path, "wb") as out:
             out.write(file.read())
-
         uploaded_paths.append(save_path)
+        saved.append(file.name)
 
-    st.success("✔ Files uploaded successfully!")
-    st.info("📌 Note: Index NOT rebuilt automatically. Please rebuild manually below.")
+    if saved:
+        st.success(f"✔ Uploaded {len(saved)} file(s): {', '.join(saved)}")
+
+        # Auto-rebuild index after every successful upload
+        with st.spinner("Rebuilding knowledge base index..."):
+            ok = rebuild_full_index()
+        if ok:
+            st.success("✔ Index rebuilt automatically.")
+        else:
+            st.error("❌ Index rebuild failed — check that the PDFs contain extractable text.")
+
+    if skipped:
+        st.warning(
+            f"⚠️ {len(skipped)} file(s) skipped — already exist in the knowledge base: "
+            f"{', '.join(skipped)}"
+        )
 
 
 # -------------------------------------------------------
@@ -115,14 +138,8 @@ else:
             with colB:
                 st.write("### 🗑 Delete File")
                 if st.button(f"Delete {file}", key=f"del_{file}"):
-
-                    delete_from_index(path)  # removes file reference only
-
-                    if os.path.exists(path):
-                        os.remove(path)
-
-                    st.success(f"🗑 Deleted {file}")
-                    st.info("📌 NOTE: Index not updated yet. Click 'Rebuild Index' below.")
+                    delete_from_index(path)
+                    st.success(f"🗑 Deleted {file} and rebuilt index.")
                     st.rerun()
 
 

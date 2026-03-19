@@ -1,5 +1,8 @@
 import streamlit as st
 import os
+from dotenv import load_dotenv
+
+load_dotenv()  # Load .env (GROQ_API_KEY etc.) into environment on startup
 
 # ---------------------------------------------------------
 # PAGE CONFIG
@@ -168,6 +171,3 @@ with cta_col2:
 with cta_col3:
     st.markdown("#### 📊 Intelligence Dashboard")
     st.markdown("[Open →](./Dashboard)")
-
-
-

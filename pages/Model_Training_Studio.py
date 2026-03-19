@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import os
-import joblib
 from io import BytesIO
 
 # ML
@@ -51,59 +50,81 @@ def find_target(df):
     return None
 
 
-# ------------------------------------------------------------
-# SAVE METADATA FOR DASHBOARD MODELS
-# ------------------------------------------------------------
-def save_metadata(feature_order, df, model_name):
-    metadata = {
-        "feature_order": feature_order,
-        "feature_means": df.mean(numeric_only=True).to_dict()
-    }
-
-    joblib.dump(metadata, f"/mount/data/models/{model_name}_metadata.pkl")
-
 
 # ------------------------------------------------------------
 # AUTO ML — ENERGY REGRESSION
 # ------------------------------------------------------------
 def train_energy(df, target):
+    from sklearn.model_selection import cross_val_score, train_test_split, RandomizedSearchCV
+
     st.session_state[f"energy_raw_data"] = df.copy()
     X = df.drop(columns=[target])
     y = df[target]
 
-    models = {
-        "RandomForest":  RandomForestRegressor(
-                             n_estimators=200, max_depth=8,
-                             min_samples_leaf=10, max_features=0.6,
-                             random_state=42),
-        "GradientBoost": GradientBoostingRegressor(
-                             n_estimators=200, max_depth=4,
-                             learning_rate=0.05, subsample=0.8,
-                             min_samples_leaf=10, random_state=42),
-        "Linear":        LinearRegression()
+    # 80/20 split — test set is held out entirely from model selection
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+
+    # Candidate models with hyperparameter search spaces
+    candidates = {
+        "RandomForest": (
+            RandomForestRegressor(random_state=42),
+            {
+                "n_estimators":    [100, 200, 300],
+                "max_depth":       [6, 8, 10, None],
+                "min_samples_leaf":[5, 10, 20],
+                "max_features":    [0.5, 0.6, 0.8],
+            }
+        ),
+        "GradientBoost": (
+            GradientBoostingRegressor(random_state=42),
+            {
+                "n_estimators":    [100, 200],
+                "max_depth":       [3, 4, 5],
+                "learning_rate":   [0.03, 0.05, 0.1],
+                "subsample":       [0.7, 0.8, 1.0],
+                "min_samples_leaf":[5, 10],
+            }
+        ),
+        "Linear": (LinearRegression(), {}),
     }
 
     best_score = -999
     best_model = None
     best_name  = ""
 
-    for name, model in models.items():
-        from sklearn.model_selection import cross_val_score
-        cv_scores = cross_val_score(model, X, y, cv=5, scoring="r2")
-        cv_mean   = float(cv_scores.mean())
+    for name, (model, param_dist) in candidates.items():
+        if param_dist:
+            search = RandomizedSearchCV(
+                model, param_dist,
+                n_iter=12, cv=5, scoring="r2",
+                random_state=42, n_jobs=-1
+            )
+            search.fit(X_train, y_train)
+            cv_mean     = float(search.best_score_)
+            tuned_model = search.best_estimator_
+        else:
+            cv_scores = cross_val_score(model, X_train, y_train, cv=5, scoring="r2")
+            cv_mean   = float(cv_scores.mean())
+            model.fit(X_train, y_train)
+            tuned_model = model
+
         if cv_mean > best_score:
             best_score = cv_mean
             best_name  = name
-            best_model = model
+            best_model = tuned_model
 
-    best_model.fit(X, y)
-    train_r2 = float(r2_score(y, best_model.predict(X)))
+    train_r2 = float(r2_score(y_train, best_model.predict(X_train)))
+    test_r2  = float(r2_score(y_test,  best_model.predict(X_test)))
+    test_mae = float(mean_absolute_error(y_test, best_model.predict(X_test)))
 
     metrics = {
         "best_model": best_name,
-        "r2":         best_score,          # CV R² — honest estimate
-        "train_r2":   train_r2,            # training R² for reference
-        "mae":        float(mean_absolute_error(y, best_model.predict(X)))
+        "r2":         best_score,
+        "train_r2":   train_r2,
+        "test_r2":    test_r2,
+        "mae":        test_mae,
     }
 
     st.session_state["energy_model"]    = best_model
@@ -116,46 +137,81 @@ def train_energy(df, target):
 # AUTO ML — CLASSIFIERS
 # ------------------------------------------------------------
 def train_classifier(df, target, name):
+    from sklearn.model_selection import cross_val_score, train_test_split, RandomizedSearchCV
+
     st.session_state[f"{name}_raw_data"] = df.copy()
     X = df.drop(columns=[target])
     y = df[target]
 
-    models = {
-        "RandomForest":      RandomForestClassifier(
-                                 n_estimators=200, max_depth=8,
-                                 min_samples_leaf=15, max_features=0.6,
-                                 random_state=42),
-        "LogisticRegression": LogisticRegression(
-                                 C=0.5, max_iter=500, random_state=42),
-        "MLPClassifier":     MLPClassifier(
-                                 hidden_layer_sizes=(64, 32), max_iter=500,
-                                 alpha=0.01, random_state=42)
+    # 80/20 stratified split — test set held out entirely from model selection
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+
+    # Candidate models with hyperparameter search spaces
+    candidates = {
+        "RandomForest": (
+            RandomForestClassifier(random_state=42),
+            {
+                "n_estimators":    [100, 200, 300],
+                "max_depth":       [6, 8, 10, None],
+                "min_samples_leaf":[10, 15, 25],
+                "max_features":    [0.5, 0.6, 0.8],
+            }
+        ),
+        "LogisticRegression": (
+            LogisticRegression(max_iter=500, random_state=42),
+            {
+                "C": [0.1, 0.3, 0.5, 1.0, 2.0],
+            }
+        ),
+        "MLPClassifier": (
+            MLPClassifier(max_iter=500, random_state=42),
+            {
+                "hidden_layer_sizes": [(64,), (64, 32), (128, 64)],
+                "alpha":              [0.001, 0.01, 0.05],
+                "learning_rate_init": [0.001, 0.005],
+            }
+        ),
     }
 
-    best_acc  = -1
+    best_acc   = -1
     best_model = None
     best_name  = ""
 
-    for name_, model in models.items():
+    for name_, (model, param_dist) in candidates.items():
         try:
-            from sklearn.model_selection import cross_val_score
-            cv_scores = cross_val_score(model, X, y, cv=5, scoring="accuracy")
-            cv_mean   = float(cv_scores.mean())
+            if param_dist:
+                search = RandomizedSearchCV(
+                    model, param_dist,
+                    n_iter=10, cv=5, scoring="accuracy",
+                    random_state=42, n_jobs=-1
+                )
+                search.fit(X_train, y_train)
+                cv_mean     = float(search.best_score_)
+                tuned_model = search.best_estimator_
+            else:
+                cv_scores = cross_val_score(model, X_train, y_train, cv=5, scoring="accuracy")
+                cv_mean   = float(cv_scores.mean())
+                model.fit(X_train, y_train)
+                tuned_model = model
+
             if cv_mean > best_acc:
                 best_acc   = cv_mean
                 best_name  = name_
-                best_model = model
+                best_model = tuned_model
         except:
             pass
 
-    best_model.fit(X, y)
-    train_acc = float(accuracy_score(y, best_model.predict(X)))
+    train_acc = float(accuracy_score(y_train, best_model.predict(X_train)))
+    test_acc  = float(accuracy_score(y_test,  best_model.predict(X_test)))
 
     metrics = {
-        "best_model": best_name,
-        "accuracy":   best_acc,           # CV accuracy — honest estimate
-        "train_accuracy": train_acc,      # training accuracy for reference
-        "report":     classification_report(y, best_model.predict(X), output_dict=True)
+        "best_model":     best_name,
+        "accuracy":       best_acc,
+        "train_accuracy": train_acc,
+        "test_accuracy":  test_acc,
+        "report":         classification_report(y_test, best_model.predict(X_test), output_dict=True)
     }
 
     st.session_state[f"{name}_model"]    = best_model
@@ -167,7 +223,9 @@ def train_classifier(df, target, name):
 # ------------------------------------------------------------
 # VISUALIZATION HELPERS
 # ------------------------------------------------------------
-def feature_importance_plot(model, X):
+def feature_importance_plot(model, X, y=None):
+    from sklearn.inspection import permutation_importance
+
     fig, ax = plt.subplots(figsize=(6, 4))
 
     if hasattr(model, "feature_importances_"):
@@ -183,7 +241,6 @@ def feature_importance_plot(model, X):
         # Linear / Logistic Regression: use absolute coefficients
         coef = model.coef_
         if coef.ndim > 1:
-            # Multi-class logistic: take mean absolute coefficient across classes
             importances = np.mean(np.abs(coef), axis=0)
         else:
             importances = np.abs(coef.flatten())
@@ -192,6 +249,22 @@ def feature_importance_plot(model, X):
         ax.set_title("Feature Coefficients (Absolute Value)")
         ax.set_xlabel("|Coefficient|")
         ax.set_ylabel("Feature")
+
+    elif y is not None:
+        # MLP or other black-box: fall back to permutation importance
+        try:
+            result      = permutation_importance(model, X, y, n_repeats=10,
+                                                 random_state=42, n_jobs=-1)
+            importances = result.importances_mean
+            sorted_idx  = np.argsort(importances)
+            sns.barplot(x=importances[sorted_idx], y=np.array(X.columns)[sorted_idx], ax=ax)
+            ax.set_title("Feature Importance (Permutation)")
+            ax.set_xlabel("Mean Accuracy Drop")
+            ax.set_ylabel("Feature")
+        except Exception as e:
+            ax.text(0.5, 0.5, f"Could not compute importance:\n{e}",
+                    ha="center", va="center", fontsize=10, wrap=True)
+            ax.axis("off")
 
     else:
         ax.text(0.5, 0.5, "Feature importance not available\nfor this model type",
@@ -309,10 +382,9 @@ def export_pdf(title, metrics, figs):
 
     if is_regression:
         story.append(Paragraph(
-            "The energy model is evaluated as a regression task. R² (coefficient of determination) "
-            "measures how much variance in energy consumption the model explains — a value of 1.0 "
-            "is a perfect fit. MAE (Mean Absolute Error) gives the average prediction error in kWh; "
-            "lower is better.",
+            "The energy model is evaluated as a regression task. Model selection used 5-fold CV on "
+            "the training set (80% of data). Final metrics are reported on the held-out test set (20%) "
+            "which was never seen during training or model selection.",
             body_style
         ))
         story.append(Spacer(1, 3*mm))
@@ -321,20 +393,25 @@ def export_pdf(title, metrics, figs):
             ["Metric", "Value", "Interpretation"],
             [Paragraph("Best Algorithm Selected", kv_key_style),
              Paragraph(str(metrics.get("best_model", "—")), kv_val_style),
-             Paragraph("Algorithm with highest R² on training data", kv_key_style)],
-            [Paragraph("R² Score", kv_key_style),
+             Paragraph("Algorithm with highest CV R² on training set", kv_key_style)],
+            [Paragraph("CV R² (Train Set)", kv_key_style),
              Paragraph(f"{metrics.get('r2', 0):.4f}", kv_val_style),
-             Paragraph("Proportion of variance explained (1.0 = perfect)", kv_key_style)],
-            [Paragraph("Mean Absolute Error (MAE)", kv_key_style),
+             Paragraph("5-fold CV R² — used for model selection", kv_key_style)],
+            [Paragraph("Train R²", kv_key_style),
+             Paragraph(f"{metrics.get('train_r2', 0):.4f}", kv_val_style),
+             Paragraph("R² on training data — compare with Test R² for overfitting check", kv_key_style)],
+            [Paragraph("Test R² (Held-Out)", kv_key_style),
+             Paragraph(f"{metrics.get('test_r2', 0):.4f}", kv_val_style),
+             Paragraph("Unbiased generalisation estimate on 20% held-out test set", kv_key_style)],
+            [Paragraph("Test MAE (Held-Out)", kv_key_style),
              Paragraph(f"{metrics.get('mae', 0):.4f} kWh", kv_val_style),
-             Paragraph("Average prediction error in kWh; lower is better", kv_key_style)],
+             Paragraph("Mean Absolute Error on test set in kWh; lower is better", kv_key_style)],
         ]
     else:
         story.append(Paragraph(
-            "The classifier is evaluated by overall accuracy and per-class precision, recall, "
-            "and F1-score. Precision measures how often a predicted class is correct; recall "
-            "measures how many actual instances of a class were caught; F1-score is their "
-            "harmonic mean. Support is the number of training samples per class.",
+            "The classifier uses 5-fold CV on the training set (80% of data) for model selection. "
+            "Final accuracy and the classification report are computed on the held-out test set (20%) "
+            "which was never seen during training or model selection.",
             body_style
         ))
         story.append(Spacer(1, 3*mm))
@@ -347,12 +424,22 @@ def export_pdf(title, metrics, figs):
         metric_data.append([
             Paragraph("Best Algorithm Selected", kv_key_style),
             Paragraph(str(metrics.get("best_model", "—")), kv_val_style),
-            Paragraph("Algorithm with highest accuracy on training data", kv_key_style)
+            Paragraph("Algorithm with highest CV accuracy on training set", kv_key_style)
         ])
         metric_data.append([
-            Paragraph("Overall Accuracy", kv_key_style),
+            Paragraph("CV Accuracy (Train Set)", kv_key_style),
             Paragraph(f"{metrics.get('accuracy', 0)*100:.1f}%", kv_val_style),
-            Paragraph("Percentage of samples correctly classified", kv_key_style)
+            Paragraph("5-fold CV accuracy — used for model selection", kv_key_style)
+        ])
+        metric_data.append([
+            Paragraph("Train Accuracy", kv_key_style),
+            Paragraph(f"{metrics.get('train_accuracy', 0)*100:.1f}%", kv_val_style),
+            Paragraph("Accuracy on training data — compare with Test Accuracy for overfitting check", kv_key_style)
+        ])
+        metric_data.append([
+            Paragraph("Test Accuracy (Held-Out)", kv_key_style),
+            Paragraph(f"{metrics.get('test_accuracy', 0)*100:.1f}%", kv_val_style),
+            Paragraph("Unbiased generalisation estimate on 20% held-out test set", kv_key_style)
         ])
 
     # Render summary metrics table
@@ -587,23 +674,27 @@ def handle_tab(upload_key, model_title, train_fn, model_name):
 
         if "r2" in metrics:
             # --- REGRESSION (Energy model) ---
-            m1, m2, m3, m4 = st.columns(4)
+            m1, m2, m3, m4, m5 = st.columns(5)
             m1.metric("🏆 Best Model", metrics["best_model"])
-            m2.metric("CV R² Score", f"{metrics['r2']:.4f}",
-                      help="5-fold cross-validated R². This is the honest generalisation estimate — not the training score.")
-            m3.metric("Train R²", f"{metrics.get('train_r2', metrics['r2']):.4f}",
-                      help="R² on training data. If much higher than CV R², the model is overfitting.")
-            m4.metric("MAE", f"{metrics['mae']:.4f} kWh",
-                      help="Mean Absolute Error on training data in kWh. Lower is better.")
+            m2.metric("CV R²", f"{metrics['r2']:.4f}",
+                      help="5-fold CV R² on training set — used for model selection.")
+            m3.metric("Train R²", f"{metrics.get('train_r2', 0):.4f}",
+                      help="R² on training data. Compare with Test R² to check for overfitting.")
+            m4.metric("Test R²", f"{metrics.get('test_r2', 0):.4f}",
+                      help="R² on the held-out 20% test set — the unbiased generalisation estimate.")
+            m5.metric("Test MAE", f"{metrics['mae']:.4f} kWh",
+                      help="Mean Absolute Error on the held-out test set. Lower is better.")
 
         else:
             # --- CLASSIFIER (Efficiency / Emission / Maintenance) ---
-            m1, m2, m3 = st.columns(3)
+            m1, m2, m3, m4 = st.columns(4)
             m1.metric("🏆 Best Model", metrics["best_model"])
             m2.metric("CV Accuracy", f"{metrics['accuracy']*100:.1f}%",
-                      help="5-fold cross-validated accuracy — the honest generalisation estimate.")
-            m3.metric("Train Accuracy", f"{metrics.get('train_accuracy', metrics['accuracy'])*100:.1f}%",
-                      help="Accuracy on training data. If much higher than CV accuracy, the model is overfitting.")
+                      help="5-fold CV accuracy on training set — used for model selection.")
+            m3.metric("Train Accuracy", f"{metrics.get('train_accuracy', 0)*100:.1f}%",
+                      help="Accuracy on training data. Compare with Test Accuracy to check for overfitting.")
+            m4.metric("Test Accuracy", f"{metrics.get('test_accuracy', 0)*100:.1f}%",
+                      help="Accuracy on the held-out 20% test set — the unbiased generalisation estimate.")
 
             # Per-class precision / recall / f1 table
             report = metrics["report"]
@@ -644,7 +735,7 @@ def handle_tab(upload_key, model_title, train_fn, model_name):
         if target != "energy":
             figs.append(confusion_matrix_plot(model, X, y))
 
-        figs.append(feature_importance_plot(model, X))
+        figs.append(feature_importance_plot(model, X, y))
 
         # 6. PDF
         pdf = export_pdf(model_title, metrics, figs)
