@@ -442,11 +442,22 @@ with tab1:
 
     # WHAT-IF MONTE CARLO
     if energy:
-        mc = monte_carlo_energy(energy)
-        mc_arr = np.array(mc)
+        mc_arr, mc_inputs = monte_carlo_energy(
+            energy_model, en_load, en_cycle, en_temp, en_speed,
+            samples=500
+        )
         mc_mean = float(np.mean(mc_arr))
         mc_p5   = float(np.percentile(mc_arr, 5))
         mc_p95  = float(np.percentile(mc_arr, 95))
+        mc_std  = float(np.std(mc_arr))
+
+        # Summary metrics
+        ms1, ms2, ms3, ms4 = st.columns(4)
+        ms1.metric("Mean Prediction", f"{mc_mean:.2f} kWh")
+        ms2.metric("Std Deviation",   f"{mc_std:.3f} kWh",
+                   help="Spread of predictions due to sensor measurement uncertainty")
+        ms3.metric("P5 (Best case)",  f"{mc_p5:.2f} kWh")
+        ms4.metric("P95 (Worst case)",f"{mc_p95:.2f} kWh")
 
         wif_col1, wif_col2 = st.columns(2)
 
@@ -456,9 +467,9 @@ with tab1:
             fig_mc_plotly.add_trace(go.Scatter(
                 y=mc_arr,
                 mode="lines",
-                line=dict(color="#4e8cff", width=1.2),
+                line=dict(color="#4e8cff", width=1.0),
                 name="Simulated Energy",
-                hovertemplate="Simulation #%{x}<br>Energy: %{y:.3f} kWh<extra></extra>"
+                hovertemplate="Run #%{x}<br>Energy: %{y:.3f} kWh<extra></extra>"
             ))
             fig_mc_plotly.add_hline(
                 y=mc_mean, line_dash="dash", line_color="#f0a500",
@@ -468,16 +479,19 @@ with tab1:
             fig_mc_plotly.add_hrect(
                 y0=mc_p5, y1=mc_p95,
                 fillcolor="rgba(78,140,255,0.08)", line_width=0,
-                annotation_text="90% confidence band",
+                annotation_text="90% interval",
                 annotation_position="top left"
             )
             fig_mc_plotly.update_layout(
-                title=dict(text="Monte Carlo Energy Variability", font=dict(size=14)),
+                title=dict(
+                    text="Monte Carlo: Energy Variability Across 500 Runs<br>"
+                         "<sup>Each run uses inputs sampled from sensor uncertainty distributions</sup>",
+                    font=dict(size=13)
+                ),
                 xaxis_title="Simulation Run",
-                yaxis_title="Energy Consumption (kWh)",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                margin=dict(t=50, b=40),
-                height=320,
+                yaxis_title="Predicted Energy (kWh)",
+                margin=dict(t=70, b=40),
+                height=340,
             )
             st.plotly_chart(fig_mc_plotly, width='stretch')
 
@@ -486,7 +500,7 @@ with tab1:
             fig_hist_plotly = go.Figure()
             fig_hist_plotly.add_trace(go.Histogram(
                 x=mc_arr,
-                nbinsx=30,
+                nbinsx=35,
                 marker_color="#4e8cff",
                 opacity=0.8,
                 name="Frequency",
@@ -494,7 +508,7 @@ with tab1:
             ))
             fig_hist_plotly.add_vline(
                 x=mc_mean, line_dash="dash", line_color="#f0a500",
-                annotation_text=f"Mean {mc_mean:.2f} kWh", annotation_position="top right"
+                annotation_text=f"Mean {mc_mean:.2f}", annotation_position="top right"
             )
             fig_hist_plotly.add_vline(
                 x=mc_p5, line_dash="dot", line_color="#e05c5c",
@@ -505,22 +519,133 @@ with tab1:
                 annotation_text=f"P95 {mc_p95:.2f}", annotation_position="top right"
             )
             fig_hist_plotly.update_layout(
-                title=dict(text="Distribution of Simulated Energy Outcomes", font=dict(size=14)),
-                xaxis_title="Energy Consumption (kWh)",
+                title=dict(
+                    text="Distribution of Simulated Energy Outcomes<br>"
+                         "<sup>Shape reflects how sensor uncertainty propagates to energy prediction</sup>",
+                    font=dict(size=13)
+                ),
+                xaxis_title="Predicted Energy (kWh)",
                 yaxis_title="Number of Simulations",
-                margin=dict(t=50, b=40),
-                height=320,
+                margin=dict(t=70, b=40),
+                height=340,
             )
             st.plotly_chart(fig_hist_plotly, width='stretch')
 
+        # --- Input sensitivity: which sensor contributes most to output spread ---
+        st.markdown(
+            "**Input Sensitivity** — which sensor's uncertainty drives the most "
+            "variability in the energy prediction"
+        )
+        sens_col1, sens_col2 = st.columns(2)
+
+        # Compute output std when varying one input at a time (others fixed at nominal)
+        input_labels = {
+            "production_load":     "Production Load",
+            "cycle_time":          "Cycle Time",
+            "machine_temperature": "Machine Temp",
+            "axis_speed":          "Axis Speed",
+        }
+        nominal = {
+            "production_load": en_load,
+            "cycle_time":      en_cycle,
+            "machine_temperature": en_temp,
+            "axis_speed":      en_speed,
+        }
+
+        sensitivity = {}
+        for key, label in input_labels.items():
+            single_arr, _ = monte_carlo_energy(
+                energy_model,
+                nominal["production_load"],
+                nominal["cycle_time"],
+                nominal["machine_temperature"],
+                nominal["axis_speed"],
+                samples=300,
+                seed=0
+            )
+            # Replace only this input with its sampled version from mc_inputs
+            overridden_results = []
+            for i in range(300):
+                vals = dict(nominal)
+                vals[key] = float(mc_inputs[key][i])
+                pred = energy_model.predict(
+                    vals["production_load"], vals["cycle_time"],
+                    vals["machine_temperature"], vals["axis_speed"]
+                )
+                overridden_results.append(max(float(pred), 0.01) if pred else 0.01)
+            sensitivity[label] = float(np.std(overridden_results))
+
+        with sens_col1:
+            sens_labels = list(sensitivity.keys())
+            sens_values = list(sensitivity.values())
+            sorted_idx  = np.argsort(sens_values)
+            fig_sens = go.Figure(go.Bar(
+                x=[sens_values[i] for i in sorted_idx],
+                y=[sens_labels[i] for i in sorted_idx],
+                orientation="h",
+                marker_color="#4e8cff",
+                hovertemplate="%{y}<br>Std contribution: %{x:.4f} kWh<extra></extra>"
+            ))
+            fig_sens.update_layout(
+                title=dict(
+                    text="Sensitivity: Std of Energy When Each Input Varies<br>"
+                         "<sup>Longer bar = that sensor's uncertainty matters more</sup>",
+                    font=dict(size=13)
+                ),
+                xaxis_title="Output Std Dev (kWh)",
+                yaxis_title="",
+                margin=dict(t=70, b=40, l=140),
+                height=300,
+            )
+            st.plotly_chart(fig_sens, width='stretch')
+
+        with sens_col2:
+            # Tornado chart: range (P95 - P5) per input
+            tornado_ranges = {}
+            for key, label in input_labels.items():
+                lo_val, hi_val = (
+                    float(np.percentile(mc_inputs[key], 5)),
+                    float(np.percentile(mc_inputs[key], 95))
+                )
+                p_lo = nominal.copy(); p_lo[key] = lo_val
+                p_hi = nominal.copy(); p_hi[key] = hi_val
+                e_lo = energy_model.predict(p_lo["production_load"], p_lo["cycle_time"],
+                                             p_lo["machine_temperature"], p_lo["axis_speed"])
+                e_hi = energy_model.predict(p_hi["production_load"], p_hi["cycle_time"],
+                                             p_hi["machine_temperature"], p_hi["axis_speed"])
+                tornado_ranges[label] = abs(float(e_hi or 0) - float(e_lo or 0))
+
+            t_labels = list(tornado_ranges.keys())
+            t_values = list(tornado_ranges.values())
+            t_sorted = np.argsort(t_values)
+            fig_tornado = go.Figure(go.Bar(
+                x=[t_values[i] for i in t_sorted],
+                y=[t_labels[i] for i in t_sorted],
+                orientation="h",
+                marker_color="#e05c5c",
+                hovertemplate="%{y}<br>Energy swing: %{x:.3f} kWh<extra></extra>"
+            ))
+            fig_tornado.update_layout(
+                title=dict(
+                    text="Tornado Chart: Energy Swing (P5→P95 of Each Input)<br>"
+                         "<sup>How much energy changes when input moves across its uncertainty range</sup>",
+                    font=dict(size=13)
+                ),
+                xaxis_title="Energy Swing (kWh)",
+                yaxis_title="",
+                margin=dict(t=70, b=40, l=140),
+                height=300,
+            )
+            st.plotly_chart(fig_tornado, width='stretch')
+
         # keep matplotlib figures for PDF (invisible to UI)
         fig_mc, ax = plt.subplots(figsize=(6, 3))
-        ax.plot(mc_arr); ax.set_title("Monte Carlo Variability")
+        ax.plot(mc_arr); ax.set_title("Monte Carlo Energy Variability (500 runs)")
         ax.set_xlabel("Simulation Run"); ax.set_ylabel("Energy (kWh)")
         plt.tight_layout(); plt.close(fig_mc)
 
         fig_hist, ax2 = plt.subplots(figsize=(6, 3))
-        ax2.hist(mc_arr, bins=30); ax2.set_title("Distribution of Energy Outcomes")
+        ax2.hist(mc_arr, bins=35); ax2.set_title("Distribution of Energy Outcomes")
         ax2.set_xlabel("Energy (kWh)"); ax2.set_ylabel("Frequency")
         plt.tight_layout(); plt.close(fig_hist)
     else:
