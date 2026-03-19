@@ -710,7 +710,7 @@ def handle_tab(upload_key, model_title, train_fn, model_name):
                 report_df["f1-score"]  = report_df["f1-score"].map("{:.2%}".format)
                 report_df["support"]   = report_df["support"].astype(int)
                 report_df.columns     = ["Precision", "Recall", "F1-Score", "Support"]
-                st.dataframe(report_df, use_container_width=True)
+                st.dataframe(report_df, width='stretch')
 
             # Macro / Weighted avg summary
             avg_rows = {k: v for k, v in report.items()
@@ -723,7 +723,7 @@ def handle_tab(upload_key, model_title, train_fn, model_name):
                 avg_df["recall"]    = avg_df["recall"].map("{:.2%}".format)
                 avg_df["f1-score"]  = avg_df["f1-score"].map("{:.2%}".format)
                 avg_df.columns      = ["Precision", "Recall", "F1-Score"]
-                st.dataframe(avg_df, use_container_width=True)
+                st.dataframe(avg_df, width='stretch')
         # ──────────────────────────────────────────────────────────────
 
         # 5. Visuals

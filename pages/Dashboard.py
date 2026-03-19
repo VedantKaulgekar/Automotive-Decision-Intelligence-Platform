@@ -479,7 +479,7 @@ with tab1:
                 margin=dict(t=50, b=40),
                 height=320,
             )
-            st.plotly_chart(fig_mc_plotly, use_container_width=True)
+            st.plotly_chart(fig_mc_plotly, width='stretch')
 
         # --- Distribution histogram ---
         with wif_col2:
@@ -511,7 +511,7 @@ with tab1:
                 margin=dict(t=50, b=40),
                 height=320,
             )
-            st.plotly_chart(fig_hist_plotly, use_container_width=True)
+            st.plotly_chart(fig_hist_plotly, width='stretch')
 
         # keep matplotlib figures for PDF (invisible to UI)
         fig_mc, ax = plt.subplots(figsize=(6, 3))
@@ -577,7 +577,7 @@ with tab1:
                 margin=dict(t=70, b=80, l=120),
                 height=400,
             )
-            st.plotly_chart(fig_corr_plotly, use_container_width=True)
+            st.plotly_chart(fig_corr_plotly, width='stretch')
 
         with corr_col2:
             fig_scatter_plotly = px.scatter(
@@ -601,7 +601,7 @@ with tab1:
                 margin=dict(t=70, b=40),
                 height=400,
             )
-            st.plotly_chart(fig_scatter_plotly, use_container_width=True)
+            st.plotly_chart(fig_scatter_plotly, width='stretch')
 
         # Row 2: box plot of each numeric feature + energy distribution
         box_col1, box_col2 = st.columns(2)
@@ -624,7 +624,7 @@ with tab1:
                 margin=dict(t=70, b=80),
                 height=380,
             )
-            st.plotly_chart(fig_box, use_container_width=True)
+            st.plotly_chart(fig_box, width='stretch')
 
         with box_col2:
             fig_en_hist = px.histogram(
@@ -641,7 +641,7 @@ with tab1:
                 height=380,
                 yaxis_title="Frequency"
             )
-            st.plotly_chart(fig_en_hist, use_container_width=True)
+            st.plotly_chart(fig_en_hist, width='stretch')
 
         # keep matplotlib figures for PDF
         fig_corr, ax3 = plt.subplots(figsize=(6, 4))
@@ -734,7 +734,7 @@ with tab2:
                 hovertemplate="<b>%{x}</b><br>Samples: %{y}<extra></extra>")
             fig_eff_plotly.update_layout(showlegend=False, margin=dict(t=70, b=40), height=360,
                 yaxis_title="Number of Training Samples")
-            st.plotly_chart(fig_eff_plotly, use_container_width=True)
+            st.plotly_chart(fig_eff_plotly, width='stretch')
 
         with eff_col2:
             # Violin: production_load distribution per efficiency class
@@ -751,7 +751,7 @@ with tab2:
                 labels={"efficiency_class": "Efficiency Class", "production_load": "Production Load (fraction)"}
             )
             fig_violin.update_layout(showlegend=False, margin=dict(t=70, b=40), height=360)
-            st.plotly_chart(fig_violin, use_container_width=True)
+            st.plotly_chart(fig_violin, width='stretch')
 
         eff_col3, eff_col4 = st.columns(2)
 
@@ -770,7 +770,7 @@ with tab2:
             )
             fig_strip.update_traces(jitter=0.4, marker=dict(size=4, opacity=0.5))
             fig_strip.update_layout(showlegend=False, margin=dict(t=70, b=40), height=360)
-            st.plotly_chart(fig_strip, use_container_width=True)
+            st.plotly_chart(fig_strip, width='stretch')
 
         with eff_col4:
             # Box: machine temperature grouped by class
@@ -786,7 +786,7 @@ with tab2:
                 labels={"efficiency_class": "Efficiency Class", "machine_temperature": "Machine Temperature (°C)"}
             )
             fig_box2.update_layout(showlegend=False, margin=dict(t=70, b=40), height=360)
-            st.plotly_chart(fig_box2, use_container_width=True)
+            st.plotly_chart(fig_box2, width='stretch')
 
         # keep matplotlib figures for PDF
         fig_eff, ax = plt.subplots(figsize=(6, 3))
@@ -872,7 +872,7 @@ with tab3:
                 hovertemplate="<b>%{x}</b> emissions<br>Samples: %{y}<extra></extra>")
             fig_em_plotly.update_layout(showlegend=False, margin=dict(t=70, b=40), height=360,
                 yaxis_title="Number of Training Samples")
-            st.plotly_chart(fig_em_plotly, use_container_width=True)
+            st.plotly_chart(fig_em_plotly, width='stretch')
 
         with em_col2:
             # True 2D scatter: load (continuous X) vs temperature (continuous Y), coloured by class
@@ -895,7 +895,7 @@ with tab3:
             fig_sc_plotly.update_traces(marker=dict(size=5))
             fig_sc_plotly.update_layout(margin=dict(t=70, b=80), height=380,
                 legend=dict(title="Emission Class", orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5))
-            st.plotly_chart(fig_sc_plotly, use_container_width=True)
+            st.plotly_chart(fig_sc_plotly, width='stretch')
 
         em_col3, em_col4 = st.columns(2)
 
@@ -914,7 +914,7 @@ with tab3:
                 labels={"emission_class": "Emission Class", "machine_temperature": "Machine Temperature (°C)"}
             )
             fig_em_violin.update_layout(showlegend=False, margin=dict(t=70, b=40), height=360)
-            st.plotly_chart(fig_em_violin, use_container_width=True)
+            st.plotly_chart(fig_em_violin, width='stretch')
 
         with em_col4:
             # Strip plot: cycle time per emission class — avoids single-line collapse
@@ -931,7 +931,7 @@ with tab3:
             )
             fig_em_strip.update_traces(jitter=0.4, marker=dict(size=4, opacity=0.45))
             fig_em_strip.update_layout(showlegend=False, margin=dict(t=70, b=40), height=360)
-            st.plotly_chart(fig_em_strip, use_container_width=True)
+            st.plotly_chart(fig_em_strip, width='stretch')
 
         # keep matplotlib figures for PDF
         fig_em, ax = plt.subplots(figsize=(6, 3))
@@ -1019,7 +1019,7 @@ with tab4:
             )
             fig_mt_plotly.update_layout(showlegend=False, margin=dict(t=70, b=40), height=360,
                 yaxis_title="Number of Training Samples")
-            st.plotly_chart(fig_mt_plotly, use_container_width=True)
+            st.plotly_chart(fig_mt_plotly, width='stretch')
 
         with mt_col2:
             # True 2D scatter: vibration (X) vs tool_wear (Y) — both continuous, coloured by class
@@ -1041,7 +1041,7 @@ with tab4:
             fig_sc_plotly.update_traces(marker=dict(size=5))
             fig_sc_plotly.update_layout(margin=dict(t=70, b=80), height=380,
                 legend=dict(title="Risk Level", orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5))
-            st.plotly_chart(fig_sc_plotly, use_container_width=True)
+            st.plotly_chart(fig_sc_plotly, width='stretch')
 
         mt_col3, mt_col4 = st.columns(2)
 
@@ -1060,7 +1060,7 @@ with tab4:
                 labels={"maintenance_class": "Risk Level", "vibration_level": "Vibration Level"}
             )
             fig_mt_violin.update_layout(showlegend=False, margin=dict(t=70, b=40), height=360)
-            st.plotly_chart(fig_mt_violin, use_container_width=True)
+            st.plotly_chart(fig_mt_violin, width='stretch')
 
         with mt_col4:
             # Box: oil_quality per maintenance class
@@ -1076,7 +1076,7 @@ with tab4:
                 labels={"maintenance_class": "Risk Level", "oil_quality": "Oil Quality Score"}
             )
             fig_mt_box.update_layout(showlegend=False, margin=dict(t=70, b=40), height=360)
-            st.plotly_chart(fig_mt_box, use_container_width=True)
+            st.plotly_chart(fig_mt_box, width='stretch')
 
         # keep matplotlib figures for PDF
         fig_mt, ax = plt.subplots(figsize=(6, 3))
