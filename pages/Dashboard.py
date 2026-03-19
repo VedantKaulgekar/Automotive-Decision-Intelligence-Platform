@@ -11,8 +11,6 @@ from modules.model_wrappers import (
     EnergyModel, EfficiencyModel, EmissionModel, MaintenanceModel
 )
 
-# Optimizers
-from modules.optimizer import optimize_with_model, pareto_optimize
 
 # Business logic
 from modules.cost_model import predict_cost
@@ -65,7 +63,7 @@ def fig_to_img(fig):
     return buf
 
 
-def pdf_export(title, figs, inputs, optim_results):
+def pdf_export(title, figs, inputs):
     import datetime
     from reportlab.lib import colors
     from reportlab.lib.units import mm
@@ -118,7 +116,7 @@ def pdf_export(title, figs, inputs, optim_results):
         "Energy Model Report": (
             "This report summarises the AI-predicted energy consumption for the configured "
             "operating parameters, together with Monte Carlo variability analysis and training-data "
-            "insights. Use the optimization results to identify settings that minimise energy draw."
+            "insights from the training data."
         ),
         "Efficiency Report": (
             "This report presents the predicted efficiency class for the given operating conditions, "
@@ -133,7 +131,7 @@ def pdf_export(title, figs, inputs, optim_results):
         "Maintenance Report": (
             "This report details the predicted maintenance risk level for the given operating conditions. "
             "Elevated vibration and tool wear are the strongest predictors of High risk. "
-            "Use the optimization results to identify parameter settings that minimise maintenance risk."
+            "Understanding which features drive risk helps maintenance teams prioritise inspections."
         ),
     }
     intro_text = intros.get(title,
@@ -183,78 +181,10 @@ def pdf_export(title, figs, inputs, optim_results):
         story.append(t)
     story.append(Spacer(1, 6*mm))
 
-    # ── Section 2 — Optimization Results ─────────────────────
+    # ── Section 2 — Visual Analytics ─────────────────────────
     story.append(HRFlowable(width="100%", thickness=0.5,
                              color=colors.HexColor("#cccccc"), spaceAfter=4))
-    story.append(Paragraph("2. Optimization Results", section_style))
-
-    optim_descriptions = {
-        "Energy Model Report": (
-            "A random-search optimizer sampled 1,500 parameter combinations and identified the "
-            "configuration that minimises predicted energy consumption. The optimal settings below "
-            "represent the lowest-energy operating point found."
-        ),
-        "Efficiency Report": (
-            "The optimizer searched for parameter combinations that maximise the predicted efficiency "
-            "class score. Settings below represent the highest-efficiency operating point found."
-        ),
-        "Emission Report": (
-            "The optimizer searched for the parameter combination that minimises the predicted "
-            "emission class score. Settings below represent the lowest-emission operating point found."
-        ),
-        "Maintenance Report": (
-            "The optimizer searched for the parameter combination that minimises predicted "
-            "maintenance risk. Settings below represent the lowest-risk operating point found."
-        ),
-    }
-    story.append(Paragraph(
-        optim_descriptions.get(title, "Optimizer search results:"), body_style
-    ))
-    story.append(Spacer(1, 2*mm))
-
-    if optim_results:
-        optim_labels = {
-            "load":           ("Optimal Production Load",  "fraction"),
-            "cycle":          ("Optimal Cycle Time",       "seconds"),
-            "temp":           ("Optimal Temperature",      "°C"),
-            "speed":          ("Optimal Axis Speed",       "m/s"),
-            "score":          ("Predicted Score",          "model units"),
-            "raw_prediction": ("Predicted Class",         ""),
-        }
-        opt_data = [["Parameter", "Value", "Unit"]]
-        for k, v in optim_results.items():
-            label, unit = optim_labels.get(k, (k.replace("_", " ").title(), ""))
-            opt_data.append([
-                Paragraph(label, kv_key_style),
-                Paragraph(f"{v:.3f}" if isinstance(v, float) else str(v), kv_val_style),
-                Paragraph(unit, kv_key_style),
-            ])
-        t2 = Table(opt_data, colWidths=[90*mm, 45*mm, 35*mm])
-        t2.setStyle(TableStyle([
-            ("BACKGROUND",  (0, 0), (-1, 0),  colors.HexColor("#27ae60")),
-            ("TEXTCOLOR",   (0, 0), (-1, 0),  colors.white),
-            ("FONTNAME",    (0, 0), (-1, 0),  base_font),
-            ("FONTSIZE",    (0, 0), (-1, 0),  10),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1),
-             [colors.HexColor("#f0fff4"), colors.white]),
-            ("GRID",        (0, 0), (-1, -1),  0.4, colors.HexColor("#dddddd")),
-            ("LEFTPADDING", (0, 0), (-1, -1),  6),
-            ("RIGHTPADDING",(0, 0), (-1, -1),  6),
-            ("TOPPADDING",  (0, 0), (-1, -1),  4),
-            ("BOTTOMPADDING",(0,0), (-1, -1),  4),
-        ]))
-        story.append(t2)
-    else:
-        story.append(Paragraph(
-            "No optimization was run for this report. Use the dashboard optimization "
-            "button and re-download to include results.", body_style
-        ))
-    story.append(Spacer(1, 6*mm))
-
-    # ── Section 3 — Visual Analytics ─────────────────────────
-    story.append(HRFlowable(width="100%", thickness=0.5,
-                             color=colors.HexColor("#cccccc"), spaceAfter=4))
-    story.append(Paragraph("3. Visual Analytics", section_style))
+    story.append(Paragraph("2. Visual Analytics", section_style))
     story.append(Paragraph(
         "The charts below were generated from the model's training data and the current "
         "what-if simulation. Each chart is accompanied by an interpretive caption.",
@@ -353,14 +283,7 @@ eff_model = EfficiencyModel()
 emiss_model = EmissionModel()
 maint_model = MaintenanceModel()
 
-# Use session_state to store optimization results
-if "optim" not in st.session_state:
-    st.session_state.optim = {
-        "energy": None,
-        "eff": None,
-        "em": None,
-        "maint": None
-    }
+
 
 
 # ============================================================================================
@@ -441,11 +364,20 @@ with tab1:
     st.subheader("🚀 What-If Analysis")
 
     # WHAT-IF MONTE CARLO
-    if energy:
-        mc_arr, mc_inputs = monte_carlo_energy(
+    # Cache MC results — only recompute when sliders actually change
+    _mc_key = (round(en_load, 3), round(en_cycle, 1), round(en_temp, 1), round(en_speed, 2))
+    if st.session_state.get("mc_cache_key") != _mc_key:
+        _mc_arr, _mc_inputs = monte_carlo_energy(
             energy_model, en_load, en_cycle, en_temp, en_speed,
-            samples=500
+            samples=300, seed=42
         )
+        st.session_state["mc_cache_key"]    = _mc_key
+        st.session_state["mc_arr"]          = _mc_arr
+        st.session_state["mc_inputs"]       = _mc_inputs
+
+    if energy:
+        mc_arr    = st.session_state["mc_arr"]
+        mc_inputs = st.session_state["mc_inputs"]
         mc_mean = float(np.mean(mc_arr))
         mc_p5   = float(np.percentile(mc_arr, 5))
         mc_p95  = float(np.percentile(mc_arr, 95))
@@ -531,112 +463,117 @@ with tab1:
             )
             st.plotly_chart(fig_hist_plotly, width='stretch')
 
-        # --- Input sensitivity: which sensor contributes most to output spread ---
+        # --- Input Sensitivity & Tornado (on-demand, cached) ---
         st.markdown(
             "**Input Sensitivity** — which sensor's uncertainty drives the most "
             "variability in the energy prediction"
         )
-        sens_col1, sens_col2 = st.columns(2)
 
-        # Compute output std when varying one input at a time (others fixed at nominal)
-        input_labels = {
-            "production_load":     "Production Load",
-            "cycle_time":          "Cycle Time",
-            "machine_temperature": "Machine Temp",
-            "axis_speed":          "Axis Speed",
-        }
-        nominal = {
-            "production_load": en_load,
-            "cycle_time":      en_cycle,
-            "machine_temperature": en_temp,
-            "axis_speed":      en_speed,
-        }
+        # Cache key: recompute only when inputs change
+        sens_cache_key = (round(en_load, 3), round(en_cycle, 1),
+                          round(en_temp, 1), round(en_speed, 2))
 
-        sensitivity = {}
-        for key, label in input_labels.items():
-            single_arr, _ = monte_carlo_energy(
-                energy_model,
-                nominal["production_load"],
-                nominal["cycle_time"],
-                nominal["machine_temperature"],
-                nominal["axis_speed"],
-                samples=300,
-                seed=0
-            )
-            # Replace only this input with its sampled version from mc_inputs
-            overridden_results = []
-            for i in range(300):
-                vals = dict(nominal)
-                vals[key] = float(mc_inputs[key][i])
-                pred = energy_model.predict(
-                    vals["production_load"], vals["cycle_time"],
-                    vals["machine_temperature"], vals["axis_speed"]
+        if st.button("🔬 Run Sensitivity Analysis", key="sens_btn"):
+            st.session_state["sens_cache_key"]    = None  # force recompute
+        
+        if st.session_state.get("sens_cache_key") != sens_cache_key:
+            with st.spinner("Computing sensitivity analysis..."):
+
+                input_keys   = ["production_load", "cycle_time", "machine_temperature", "axis_speed"]
+                input_labels = {
+                    "production_load":     "Production Load",
+                    "cycle_time":          "Cycle Time",
+                    "machine_temperature": "Machine Temp",
+                    "axis_speed":          "Axis Speed",
+                }
+                nominal = np.array([en_load, en_cycle, en_temp, en_speed])
+                N = len(mc_inputs["production_load"])
+
+                # ── Sensitivity: one predict_batch call per input ─────────────
+                # Fix all inputs at nominal, vary only input[i] using its MC samples.
+                # 4 batch calls of N predictions each (was 4 × N scalar calls).
+                sensitivity = {}
+                for idx, key in enumerate(input_keys):
+                    batch = np.tile(nominal, (N, 1))          # N × 4, all nominal
+                    batch[:, idx] = mc_inputs[key]            # vary only this column
+                    preds = energy_model.predict_batch(
+                        batch[:, 0], batch[:, 1], batch[:, 2], batch[:, 3]
+                    )
+                    preds = np.maximum(preds.astype(float), 0.01)
+                    sensitivity[input_labels[key]] = float(np.std(preds))
+
+                # ── Tornado: 8 scalar calls total (P5 + P95 for each of 4 inputs) ─
+                tornado_ranges = {}
+                for idx, key in enumerate(input_keys):
+                    lo_val = float(np.percentile(mc_inputs[key], 5))
+                    hi_val = float(np.percentile(mc_inputs[key], 95))
+                    pt_lo  = nominal.copy(); pt_lo[idx] = lo_val
+                    pt_hi  = nominal.copy(); pt_hi[idx] = hi_val
+                    e_lo   = energy_model.predict(pt_lo[0], pt_lo[1], pt_lo[2], pt_lo[3])
+                    e_hi   = energy_model.predict(pt_hi[0], pt_hi[1], pt_hi[2], pt_hi[3])
+                    tornado_ranges[input_labels[key]] = abs(float(e_hi or 0) - float(e_lo or 0))
+
+                st.session_state["sens_results"]   = sensitivity
+                st.session_state["tornado_results"] = tornado_ranges
+                st.session_state["sens_cache_key"]  = sens_cache_key
+
+        # Display cached results if available
+        if "sens_results" in st.session_state:
+            sensitivity    = st.session_state["sens_results"]
+            tornado_ranges = st.session_state["tornado_results"]
+
+            sens_col1, sens_col2 = st.columns(2)
+
+            with sens_col1:
+                sens_labels = list(sensitivity.keys())
+                sens_values = list(sensitivity.values())
+                sorted_idx  = np.argsort(sens_values)
+                fig_sens = go.Figure(go.Bar(
+                    x=[sens_values[i] for i in sorted_idx],
+                    y=[sens_labels[i] for i in sorted_idx],
+                    orientation="h",
+                    marker_color="#4e8cff",
+                    hovertemplate="%{y}<br>Std contribution: %{x:.4f} kWh<extra></extra>"
+                ))
+                fig_sens.update_layout(
+                    title=dict(
+                        text="Sensitivity: Std of Energy When Each Input Varies<br>"
+                             "<sup>Longer bar = that sensor's uncertainty matters more</sup>",
+                        font=dict(size=13)
+                    ),
+                    xaxis_title="Output Std Dev (kWh)",
+                    yaxis_title="",
+                    margin=dict(t=70, b=40, l=140),
+                    height=300,
                 )
-                overridden_results.append(max(float(pred), 0.01) if pred else 0.01)
-            sensitivity[label] = float(np.std(overridden_results))
+                st.plotly_chart(fig_sens, width='stretch')
 
-        with sens_col1:
-            sens_labels = list(sensitivity.keys())
-            sens_values = list(sensitivity.values())
-            sorted_idx  = np.argsort(sens_values)
-            fig_sens = go.Figure(go.Bar(
-                x=[sens_values[i] for i in sorted_idx],
-                y=[sens_labels[i] for i in sorted_idx],
-                orientation="h",
-                marker_color="#4e8cff",
-                hovertemplate="%{y}<br>Std contribution: %{x:.4f} kWh<extra></extra>"
-            ))
-            fig_sens.update_layout(
-                title=dict(
-                    text="Sensitivity: Std of Energy When Each Input Varies<br>"
-                         "<sup>Longer bar = that sensor's uncertainty matters more</sup>",
-                    font=dict(size=13)
-                ),
-                xaxis_title="Output Std Dev (kWh)",
-                yaxis_title="",
-                margin=dict(t=70, b=40, l=140),
-                height=300,
-            )
-            st.plotly_chart(fig_sens, width='stretch')
-
-        with sens_col2:
-            # Tornado chart: range (P95 - P5) per input
-            tornado_ranges = {}
-            for key, label in input_labels.items():
-                lo_val, hi_val = (
-                    float(np.percentile(mc_inputs[key], 5)),
-                    float(np.percentile(mc_inputs[key], 95))
+            with sens_col2:
+                t_labels = list(tornado_ranges.keys())
+                t_values = list(tornado_ranges.values())
+                t_sorted = np.argsort(t_values)
+                fig_tornado = go.Figure(go.Bar(
+                    x=[t_values[i] for i in t_sorted],
+                    y=[t_labels[i] for i in t_sorted],
+                    orientation="h",
+                    marker_color="#e05c5c",
+                    hovertemplate="%{y}<br>Energy swing: %{x:.3f} kWh<extra></extra>"
+                ))
+                fig_tornado.update_layout(
+                    title=dict(
+                        text="Tornado Chart: Energy Swing (P5→P95 of Each Input)<br>"
+                             "<sup>How much energy changes when input moves across its uncertainty range</sup>",
+                        font=dict(size=13)
+                    ),
+                    xaxis_title="Energy Swing (kWh)",
+                    yaxis_title="",
+                    margin=dict(t=70, b=40, l=140),
+                    height=300,
                 )
-                p_lo = nominal.copy(); p_lo[key] = lo_val
-                p_hi = nominal.copy(); p_hi[key] = hi_val
-                e_lo = energy_model.predict(p_lo["production_load"], p_lo["cycle_time"],
-                                             p_lo["machine_temperature"], p_lo["axis_speed"])
-                e_hi = energy_model.predict(p_hi["production_load"], p_hi["cycle_time"],
-                                             p_hi["machine_temperature"], p_hi["axis_speed"])
-                tornado_ranges[label] = abs(float(e_hi or 0) - float(e_lo or 0))
-
-            t_labels = list(tornado_ranges.keys())
-            t_values = list(tornado_ranges.values())
-            t_sorted = np.argsort(t_values)
-            fig_tornado = go.Figure(go.Bar(
-                x=[t_values[i] for i in t_sorted],
-                y=[t_labels[i] for i in t_sorted],
-                orientation="h",
-                marker_color="#e05c5c",
-                hovertemplate="%{y}<br>Energy swing: %{x:.3f} kWh<extra></extra>"
-            ))
-            fig_tornado.update_layout(
-                title=dict(
-                    text="Tornado Chart: Energy Swing (P5→P95 of Each Input)<br>"
-                         "<sup>How much energy changes when input moves across its uncertainty range</sup>",
-                    font=dict(size=13)
-                ),
-                xaxis_title="Energy Swing (kWh)",
-                yaxis_title="",
-                margin=dict(t=70, b=40, l=140),
-                height=300,
-            )
-            st.plotly_chart(fig_tornado, width='stretch')
+                st.plotly_chart(fig_tornado, width='stretch')
+        else:
+            st.info("👆 Click **Run Sensitivity Analysis** above to compute which inputs "
+                    "drive the most uncertainty in the energy prediction.")
 
         # keep matplotlib figures for PDF (invisible to UI)
         fig_mc, ax = plt.subplots(figsize=(6, 3))
@@ -652,26 +589,6 @@ with tab1:
         fig_mc = fig_hist = safe_fig()
 
     st.divider()
-
-    # -------------------------------------------------------------
-    # OPTIMIZATION BUTTONS
-    # -------------------------------------------------------------
-    st.subheader("🚀 Optimization")
-
-    if st.button("Run Grid Optimization (Min Energy)"):
-        st.session_state.optim["energy"] = optimize_with_model(
-            energy_model, "min"
-        )
-
-    best_energy = st.session_state.optim["energy"]
-
-    if best_energy:
-        st.success(
-            f"**Optimal Settings →** Load={best_energy['load']:.2f}, "
-            f"Cycle={best_energy['cycle']:.1f}, Temp={best_energy['temp']:.1f}, "
-            f"Speed={best_energy['speed']:.2f}  \n\n"
-            f"📉 Min Energy: **{best_energy['score']:.2f} kWh**"
-        )
 
     # Training heatmap
     try:
@@ -787,13 +704,7 @@ with tab1:
     pdf = pdf_export(
         "Energy Model Report",
         [fig_mc, fig_hist, fig_corr, fig_scatter],
-        {
-            "load": en_load,
-            "cycle": en_cycle,
-            "temp": en_temp,
-            "speed": en_speed
-        },
-        best_energy or {}
+        {"load": en_load, "cycle": en_cycle, "temp": en_temp, "speed": en_speed}
     )
 
     st.download_button("📄 Download Energy Report", pdf, file_name="energy_report.pdf", key="tab1")
@@ -817,21 +728,6 @@ with tab2:
     pred_eff = eff_model.predict(ef_load, ef_cycle, ef_temp, ef_speed)
     st.metric("Predicted Class", pred_eff)
 
-    st.divider()
-    st.subheader("🚀 Optimization")
-
-    if st.button("Optimize Efficiency (Grid)", key="eff_grid"):
-        st.session_state.optim["eff"] = optimize_with_model(eff_model, "max")
-
-    best_eff = st.session_state.optim["eff"]
-
-    if best_eff:
-        st.success(
-            f"**Optimal Settings →** Load={best_energy['load']:.2f}, "
-            f"Cycle={best_energy['cycle']:.1f}, Temp={best_energy['temp']:.1f}, "
-            f"Speed={best_energy['speed']:.2f}  \n\n"
-            f"⭐ Best Efficiency Score: **{best_eff['raw_prediction']}**"
-        )
     # Visuals
     try:
         df = st.session_state.get("efficiency_raw_data")
@@ -929,9 +825,7 @@ with tab2:
         fig_eff = fig_sc = safe_fig()
 
     pdf = pdf_export("Efficiency Report", [fig_eff, fig_sc],
-                     {"load": ef_load, "cycle": ef_cycle, "temp": ef_temp, "speed": ef_speed},
-                     best_eff or {}
-                     )
+                     {"load": ef_load, "cycle": ef_cycle, "temp": ef_temp, "speed": ef_speed})
 
     st.download_button("📄 Download PDF", pdf, file_name="efficiency_report.pdf", key="tab2")
 
@@ -953,22 +847,6 @@ with tab3:
 
     pred_em = emiss_model.predict(em_load, em_cycle, em_temp, em_speed)
     st.metric("Emission Class", pred_em)
-
-    st.divider()
-    st.subheader("🚀 Optimization")
-
-    if st.button("Minimize Emissions (Grid)", key="em_grid"):
-        st.session_state.optim["em"] = optimize_with_model(emiss_model, "min")
-
-    best_em = st.session_state.optim["em"]
-
-    if best_em:
-        st.success(
-            f"**Optimal Settings →** Load={best_energy['load']:.2f}, "
-            f"Cycle={best_energy['cycle']:.1f}, Temp={best_energy['temp']:.1f}, "
-            f"Speed={best_energy['speed']:.2f}  \n\n"
-            f"🌍 Lowest Emission Score: **{best_em['raw_prediction']}**"
-        )
 
     # Visuals
     try:
@@ -1075,8 +953,7 @@ with tab3:
 
     pdf = pdf_export("Emission Report",
                      [fig_em, fig_sc],
-                     {"load": em_load, "cycle": em_cycle, "temp": em_temp, "speed": em_speed},
-                     best_em or {})
+                     {"load": em_load, "cycle": em_cycle, "temp": em_temp, "speed": em_speed})
 
     st.download_button("📄 Download PDF", pdf, file_name="emission_report.pdf", key="tab3")
 
@@ -1098,22 +975,6 @@ with tab4:
 
     pred_m = maint_model.predict(m_load, m_cycle, m_temp, m_speed)
     st.metric("Maintenance Risk", pred_m)
-
-    st.divider()
-    st.subheader("🚀 Optimization")
-    
-    if st.button("Minimize Risk (Grid)", key="m_grid"):
-        st.session_state.optim["maint"] = optimize_with_model(maint_model, "min")
-
-    best_m = st.session_state.optim["maint"]
-
-    if best_m:
-        st.success(
-            f"**Optimal Settings →** Load={best_energy['load']:.2f}, "
-            f"Cycle={best_energy['cycle']:.1f}, Temp={best_energy['temp']:.1f}, "
-            f"Speed={best_energy['speed']:.2f}  \n\n"
-            f"🛠 Minimum Risk Level: **{best_m['raw_prediction']}**"
-        )
 
     # Visuals
     try:
@@ -1221,7 +1082,6 @@ with tab4:
 
     pdf = pdf_export("Maintenance Report",
                      [fig_mt, fig_sc],
-                     {"load": m_load, "cycle": m_cycle, "temp": m_temp, "speed": m_speed},
-                     best_m or {})
+                     {"load": m_load, "cycle": m_cycle, "temp": m_temp, "speed": m_speed})
 
     st.download_button("📄 Download PDF", pdf, file_name="maintenance_report.pdf", key="tab4")

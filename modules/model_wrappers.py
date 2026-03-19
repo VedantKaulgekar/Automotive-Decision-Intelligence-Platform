@@ -52,6 +52,33 @@ class BaseWrapper:
         X = self._build_row(load, cycle, temp, speed)
         return self.model.predict(X)[0]
 
+    def predict_batch(self, loads, cycles, temps, speeds):
+        """
+        Vectorised batch prediction — builds one DataFrame for N samples
+        and calls model.predict once. Orders of magnitude faster than
+        calling predict() in a Python loop.
+
+        Parameters: 1-D array-like of length N each.
+        Returns: np.ndarray of shape (N,)
+        """
+        if self.model is None:
+            return None
+        n = len(loads)
+        df = pd.DataFrame({
+            "production_load":     np.asarray(loads,  dtype=float),
+            "cycle_time":          np.asarray(cycles, dtype=float),
+            "machine_temperature": np.asarray(temps,  dtype=float),
+            "axis_speed":          np.asarray(speeds, dtype=float),
+            **{k: np.full(n, v, dtype=float) for k, v in self.RAW_DEFAULTS.items()}
+        })
+        df = apply_engineering(df)
+        for col in self.feature_order:
+            if col not in df:
+                df[col] = 0.0
+        X = df[self.feature_order].values.astype(float)
+        return self.model.predict(X)
+
+
 
 # ====================================================
 #               INDIVIDUAL MODEL WRAPPERS

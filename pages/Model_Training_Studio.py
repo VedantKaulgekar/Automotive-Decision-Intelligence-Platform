@@ -2,20 +2,42 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import os
+import time
 from io import BytesIO
+import concurrent.futures
 
 # ML
 from sklearn.metrics import (
     r2_score, mean_absolute_error, accuracy_score, classification_report,
     confusion_matrix
 )
-from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier, GradientBoostingRegressor
-from sklearn.linear_model import LogisticRegression, LinearRegression
+from sklearn.ensemble import (
+    RandomForestRegressor, RandomForestClassifier,
+    GradientBoostingRegressor, GradientBoostingClassifier,
+    ExtraTreesRegressor, ExtraTreesClassifier
+)
+from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.neural_network import MLPClassifier
+
+# XGBoost / LightGBM — optional, graceful fallback if not installed
+try:
+    from xgboost import XGBRegressor, XGBClassifier
+    HAS_XGB = True
+except ImportError:
+    HAS_XGB = False
+
+try:
+    from lightgbm import LGBMRegressor, LGBMClassifier
+    HAS_LGBM = True
+except ImportError:
+    HAS_LGBM = False
 
 # Viz
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 import seaborn as sns
+import plotly.graph_objects as go
+import plotly.express as px
 
 # Modules
 from modules.preprocessing import load_dataset, preprocess
@@ -30,19 +52,18 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase import pdfmetrics
 
 
-# ------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # SETUP
-# ------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Model Training Studio", layout="wide")
 ensure_dirs()
-
 pdfmetrics.registerFont(TTFont("DejaVu", "assets/fonts/DejaVuSans.ttf"))
 st.title("🛠 Automotive Sustainability – Model Training Studio")
 
 
-# ------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # TARGET DETECTOR
-# ------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 def find_target(df):
     for t in ["energy", "efficiency_class", "emission_class", "maintenance_class"]:
         if t in df.columns:
@@ -50,70 +71,268 @@ def find_target(df):
     return None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CANDIDATE POOLS
+# ─────────────────────────────────────────────────────────────────────────────
+def get_regression_candidates():
+    candidates = {
+        "RandomForest": (
+            RandomForestRegressor(random_state=42),
+            {"n_estimators": [100, 200, 300], "max_depth": [6, 8, 10, None],
+             "min_samples_leaf": [5, 10, 20], "max_features": [0.5, 0.6, 0.8]}
+        ),
+        "ExtraTrees": (
+            ExtraTreesRegressor(random_state=42),
+            {"n_estimators": [100, 200, 300], "max_depth": [6, 8, 10, None],
+             "min_samples_leaf": [5, 10, 20], "max_features": [0.5, 0.6, 0.8]}
+        ),
+        "GradientBoosting": (
+            GradientBoostingRegressor(random_state=42),
+            {"n_estimators": [100, 200], "max_depth": [3, 4, 5],
+             "learning_rate": [0.03, 0.05, 0.1], "subsample": [0.7, 0.8, 1.0],
+             "min_samples_leaf": [5, 10]}
+        ),
+        "Ridge": (
+            Ridge(),
+            {"alpha": [0.01, 0.1, 1.0, 10.0, 100.0]}
+        ),
+    }
+    if HAS_XGB:
+        candidates["XGBoost"] = (
+            XGBRegressor(random_state=42, verbosity=0, eval_metric="rmse"),
+            {"n_estimators": [100, 200, 300], "max_depth": [3, 5, 7],
+             "learning_rate": [0.03, 0.05, 0.1], "subsample": [0.7, 0.8, 1.0],
+             "colsample_bytree": [0.6, 0.8, 1.0], "reg_alpha": [0, 0.1, 1.0]}
+        )
+    if HAS_LGBM:
+        candidates["LightGBM"] = (
+            LGBMRegressor(random_state=42, verbosity=-1),
+            {"n_estimators": [100, 200, 300], "max_depth": [3, 5, 7],
+             "learning_rate": [0.03, 0.05, 0.1], "num_leaves": [15, 31, 63],
+             "subsample": [0.7, 0.8, 1.0], "colsample_bytree": [0.6, 0.8, 1.0]}
+        )
+    return candidates
 
-# ------------------------------------------------------------
+
+def get_classifier_candidates():
+    candidates = {
+        "RandomForest": (
+            RandomForestClassifier(random_state=42),
+            {"n_estimators": [100, 200, 300], "max_depth": [6, 8, 10, None],
+             "min_samples_leaf": [10, 15, 25], "max_features": [0.5, 0.6, 0.8]}
+        ),
+        "ExtraTrees": (
+            ExtraTreesClassifier(random_state=42),
+            {"n_estimators": [100, 200, 300], "max_depth": [6, 8, 10, None],
+             "min_samples_leaf": [10, 15, 25], "max_features": [0.5, 0.6, 0.8]}
+        ),
+        "GradientBoosting": (
+            GradientBoostingClassifier(random_state=42),
+            {"n_estimators": [100, 200], "max_depth": [3, 4, 5],
+             "learning_rate": [0.03, 0.05, 0.1], "subsample": [0.7, 0.8, 1.0],
+             "min_samples_leaf": [5, 10]}
+        ),
+        "LogisticRegression": (
+            LogisticRegression(max_iter=500, random_state=42),
+            {"C": [0.1, 0.3, 0.5, 1.0, 2.0]}
+        ),
+        "MLP": (
+            MLPClassifier(max_iter=500, random_state=42),
+            {"hidden_layer_sizes": [(64,), (64, 32), (128, 64)],
+             "alpha": [0.001, 0.01, 0.05],
+             "learning_rate_init": [0.001, 0.005]}
+        ),
+    }
+    if HAS_XGB:
+        candidates["XGBoost"] = (
+            XGBClassifier(random_state=42, verbosity=0, eval_metric="mlogloss",
+                          use_label_encoder=False),
+            {"n_estimators": [100, 200, 300], "max_depth": [3, 5, 7],
+             "learning_rate": [0.03, 0.05, 0.1], "subsample": [0.7, 0.8, 1.0],
+             "colsample_bytree": [0.6, 0.8, 1.0], "reg_alpha": [0, 0.1, 1.0]}
+        )
+    if HAS_LGBM:
+        candidates["LightGBM"] = (
+            LGBMClassifier(random_state=42, verbosity=-1),
+            {"n_estimators": [100, 200, 300], "max_depth": [3, 5, 7],
+             "learning_rate": [0.03, 0.05, 0.1], "num_leaves": [15, 31, 63],
+             "subsample": [0.7, 0.8, 1.0], "colsample_bytree": [0.6, 0.8, 1.0]}
+        )
+    return candidates
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TRAIN ONE CANDIDATE  (runs in a thread)
+# ─────────────────────────────────────────────────────────────────────────────
+def _train_one(name, model, param_dist, X_train, y_train, scoring, n_iter=10):
+    """
+    Train a single candidate with RandomizedSearchCV.
+    Returns (name, cv_score, fitted_model) or (name, -inf, None) on failure.
+    """
+    from sklearn.model_selection import cross_val_score, RandomizedSearchCV
+    try:
+        if param_dist:
+            search = RandomizedSearchCV(
+                model, param_dist,
+                n_iter=n_iter, cv=5, scoring=scoring,
+                random_state=42, n_jobs=-1
+            )
+            search.fit(X_train, y_train)
+            return name, float(search.best_score_), search.best_estimator_
+        else:
+            scores = cross_val_score(model, X_train, y_train, cv=5, scoring=scoring)
+            model.fit(X_train, y_train)
+            return name, float(scores.mean()), model
+    except Exception as e:
+        return name, float("-inf"), None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LIVE TRAINING UI HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+def _render_data_profile(df, target, placeholder):
+    """Show data shape, class distribution / target stats, and feature correlations."""
+    with placeholder.container():
+        st.markdown("### 📊 Dataset Profile")
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Rows", f"{len(df):,}")
+        c2.metric("Features", len(df.columns) - 1)
+        c3.metric("Target", target)
+
+        col_left, col_right = st.columns(2)
+
+        # Left: target distribution
+        with col_left:
+            if df[target].dtype == object or df[target].nunique() <= 5:
+                counts = df[target].value_counts().sort_index()
+                fig = px.bar(
+                    x=counts.index.astype(str), y=counts.values,
+                    color=counts.index.astype(str),
+                    color_discrete_sequence=px.colors.qualitative.Set2,
+                    labels={"x": target, "y": "Count"},
+                    title=f"Target Distribution — {target}"
+                )
+                fig.update_layout(showlegend=False, height=300, margin=dict(t=40, b=30))
+                st.plotly_chart(fig, width="stretch")
+            else:
+                fig = px.histogram(
+                    df, x=target, nbins=30,
+                    color_discrete_sequence=["#4e8cff"],
+                    title=f"Target Distribution — {target}",
+                    labels={target: target, "count": "Frequency"}
+                )
+                fig.update_layout(height=300, margin=dict(t=40, b=30))
+                st.plotly_chart(fig, width="stretch")
+
+        # Right: correlation with target
+        with col_right:
+            numeric = df.select_dtypes(include=[np.number])
+            if target in numeric.columns and len(numeric.columns) > 1:
+                corr_with_target = (
+                    numeric.corr(numeric_only=True)[target]
+                    .drop(target)
+                    .sort_values(key=abs, ascending=True)
+                )
+                fig2 = go.Figure(go.Bar(
+                    x=corr_with_target.values,
+                    y=corr_with_target.index,
+                    orientation="h",
+                    marker_color=["#e05c5c" if v < 0 else "#4e8cff"
+                                  for v in corr_with_target.values],
+                    hovertemplate="%{y}<br>r = %{x:.3f}<extra></extra>"
+                ))
+                fig2.update_layout(
+                    title=f"Feature Correlation with {target}",
+                    xaxis_title="Pearson r",
+                    height=300, margin=dict(t=40, b=30, l=130)
+                )
+                st.plotly_chart(fig2, width="stretch")
+
+
+def _render_live_scoreboard(results_so_far, scoring_label, placeholder):
+    """Render a live bar chart of CV scores as candidates finish."""
+    with placeholder.container():
+        if not results_so_far:
+            st.info("⏳ Waiting for first candidate to finish…")
+            return
+
+        names  = [r[0] for r in results_so_far]
+        scores = [max(r[1], 0) for r in results_so_far]   # clip negatives for display
+        colors = ["#27ae60" if s == max(scores) else "#4e8cff" for s in scores]
+
+        fig = go.Figure(go.Bar(
+            x=scores, y=names, orientation="h",
+            marker_color=colors,
+            text=[f"{s:.4f}" for s in scores],
+            textposition="outside",
+            hovertemplate="%{y}<br>CV Score: %{x:.4f}<extra></extra>"
+        ))
+        fig.update_layout(
+            title=f"🏆 Live CV {scoring_label} Scoreboard",
+            xaxis_title=scoring_label,
+            height=max(200, 60 * len(names)),
+            margin=dict(t=50, b=30, l=130, r=60),
+            xaxis=dict(range=[0, max(scores) * 1.15 if scores else 1])
+        )
+        st.plotly_chart(fig, width="stretch")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # AUTO ML — ENERGY REGRESSION
-# ------------------------------------------------------------
-def train_energy(df, target):
-    from sklearn.model_selection import cross_val_score, train_test_split, RandomizedSearchCV
+# ─────────────────────────────────────────────────────────────────────────────
+def train_energy(df, target, profile_ph, progress_ph, scoreboard_ph, status_ph):
+    from sklearn.model_selection import train_test_split
 
-    st.session_state[f"energy_raw_data"] = df.copy()
+    st.session_state["energy_raw_data"] = df.copy()
     X = df.drop(columns=[target])
     y = df[target]
 
-    # 80/20 split — test set is held out entirely from model selection
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
 
-    # Candidate models with hyperparameter search spaces
-    candidates = {
-        "RandomForest": (
-            RandomForestRegressor(random_state=42),
-            {
-                "n_estimators":    [100, 200, 300],
-                "max_depth":       [6, 8, 10, None],
-                "min_samples_leaf":[5, 10, 20],
-                "max_features":    [0.5, 0.6, 0.8],
-            }
-        ),
-        "GradientBoost": (
-            GradientBoostingRegressor(random_state=42),
-            {
-                "n_estimators":    [100, 200],
-                "max_depth":       [3, 4, 5],
-                "learning_rate":   [0.03, 0.05, 0.1],
-                "subsample":       [0.7, 0.8, 1.0],
-                "min_samples_leaf":[5, 10],
-            }
-        ),
-        "Linear": (LinearRegression(), {}),
-    }
+    # Show data profile immediately
+    _render_data_profile(df, target, profile_ph)
 
-    best_score = -999
-    best_model = None
-    best_name  = ""
+    candidates = get_regression_candidates()
+    n_cands    = len(candidates)
+    results    = []   # (name, cv_score, model)
 
-    for name, (model, param_dist) in candidates.items():
-        if param_dist:
-            search = RandomizedSearchCV(
-                model, param_dist,
-                n_iter=12, cv=5, scoring="r2",
-                random_state=42, n_jobs=-1
+    # ── Parallel training with live updates ──────────────────────────────────
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, n_cands)) as ex:
+        futures = {
+            ex.submit(_train_one, name, model, param_dist,
+                      X_train, y_train, "r2", 12): name
+            for name, (model, param_dist) in candidates.items()
+        }
+
+        done_count = 0
+        for fut in concurrent.futures.as_completed(futures):
+            name, score, model = fut.result()
+            done_count += 1
+
+            if model is not None:
+                results.append((name, score, model))
+
+            # Update progress bar
+            progress_ph.progress(
+                done_count / n_cands,
+                text=f"✅ {name} done  ({done_count}/{n_cands})"
             )
-            search.fit(X_train, y_train)
-            cv_mean     = float(search.best_score_)
-            tuned_model = search.best_estimator_
-        else:
-            cv_scores = cross_val_score(model, X_train, y_train, cv=5, scoring="r2")
-            cv_mean   = float(cv_scores.mean())
-            model.fit(X_train, y_train)
-            tuned_model = model
 
-        if cv_mean > best_score:
-            best_score = cv_mean
-            best_name  = name
-            best_model = tuned_model
+            # Update live scoreboard
+            _render_live_scoreboard(
+                [(r[0], r[1]) for r in results], "R²", scoreboard_ph
+            )
+
+    if not results:
+        status_ph.error("All candidates failed to train.")
+        return None, None
+
+    # Best by CV R²
+    results.sort(key=lambda x: x[1], reverse=True)
+    best_name, best_cv, best_model = results[0]
 
     train_r2 = float(r2_score(y_train, best_model.predict(X_train)))
     test_r2  = float(r2_score(y_test,  best_model.predict(X_test)))
@@ -121,259 +340,241 @@ def train_energy(df, target):
 
     metrics = {
         "best_model": best_name,
-        "r2":         best_score,
+        "r2":         best_cv,
         "train_r2":   train_r2,
         "test_r2":    test_r2,
         "mae":        test_mae,
+        "all_results": [(r[0], r[1]) for r in results],
     }
 
     st.session_state["energy_model"]    = best_model
     st.session_state["energy_metadata"] = {"feature_order": list(X.columns)}
 
+    status_ph.success(
+        f"🏆 **{best_name}** selected  |  CV R²: {best_cv:.4f}  |  "
+        f"Train R²: {train_r2:.4f}  |  Test R²: {test_r2:.4f}  |  "
+        f"Test MAE: {test_mae:.4f} kWh"
+    )
     return best_model, metrics
 
 
-# ------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # AUTO ML — CLASSIFIERS
-# ------------------------------------------------------------
-def train_classifier(df, target, name):
-    from sklearn.model_selection import cross_val_score, train_test_split, RandomizedSearchCV
+# ─────────────────────────────────────────────────────────────────────────────
+def train_classifier(df, target, name, profile_ph, progress_ph, scoreboard_ph, status_ph):
+    from sklearn.model_selection import train_test_split
 
     st.session_state[f"{name}_raw_data"] = df.copy()
     X = df.drop(columns=[target])
     y = df[target]
 
-    # 80/20 stratified split — test set held out entirely from model selection
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
-    # Candidate models with hyperparameter search spaces
-    candidates = {
-        "RandomForest": (
-            RandomForestClassifier(random_state=42),
-            {
-                "n_estimators":    [100, 200, 300],
-                "max_depth":       [6, 8, 10, None],
-                "min_samples_leaf":[10, 15, 25],
-                "max_features":    [0.5, 0.6, 0.8],
-            }
-        ),
-        "LogisticRegression": (
-            LogisticRegression(max_iter=500, random_state=42),
-            {
-                "C": [0.1, 0.3, 0.5, 1.0, 2.0],
-            }
-        ),
-        "MLPClassifier": (
-            MLPClassifier(max_iter=500, random_state=42),
-            {
-                "hidden_layer_sizes": [(64,), (64, 32), (128, 64)],
-                "alpha":              [0.001, 0.01, 0.05],
-                "learning_rate_init": [0.001, 0.005],
-            }
-        ),
-    }
+    _render_data_profile(df, target, profile_ph)
 
-    best_acc   = -1
-    best_model = None
-    best_name  = ""
+    candidates = get_classifier_candidates()
+    n_cands    = len(candidates)
+    results    = []
 
-    for name_, (model, param_dist) in candidates.items():
-        try:
-            if param_dist:
-                search = RandomizedSearchCV(
-                    model, param_dist,
-                    n_iter=10, cv=5, scoring="accuracy",
-                    random_state=42, n_jobs=-1
-                )
-                search.fit(X_train, y_train)
-                cv_mean     = float(search.best_score_)
-                tuned_model = search.best_estimator_
-            else:
-                cv_scores = cross_val_score(model, X_train, y_train, cv=5, scoring="accuracy")
-                cv_mean   = float(cv_scores.mean())
-                model.fit(X_train, y_train)
-                tuned_model = model
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, n_cands)) as ex:
+        futures = {
+            ex.submit(_train_one, cname, model, param_dist,
+                      X_train, y_train, "accuracy", 10): cname
+            for cname, (model, param_dist) in candidates.items()
+        }
 
-            if cv_mean > best_acc:
-                best_acc   = cv_mean
-                best_name  = name_
-                best_model = tuned_model
-        except:
-            pass
+        done_count = 0
+        for fut in concurrent.futures.as_completed(futures):
+            cname, score, model = fut.result()
+            done_count += 1
+
+            if model is not None:
+                results.append((cname, score, model))
+
+            progress_ph.progress(
+                done_count / n_cands,
+                text=f"✅ {cname} done  ({done_count}/{n_cands})"
+            )
+            _render_live_scoreboard(
+                [(r[0], r[1]) for r in results], "Accuracy", scoreboard_ph
+            )
+
+    if not results:
+        status_ph.error("All candidates failed to train.")
+        return None, None
+
+    results.sort(key=lambda x: x[1], reverse=True)
+    best_cname, best_acc, best_model = results[0]
 
     train_acc = float(accuracy_score(y_train, best_model.predict(X_train)))
     test_acc  = float(accuracy_score(y_test,  best_model.predict(X_test)))
 
     metrics = {
-        "best_model":     best_name,
+        "best_model":     best_cname,
         "accuracy":       best_acc,
         "train_accuracy": train_acc,
         "test_accuracy":  test_acc,
-        "report":         classification_report(y_test, best_model.predict(X_test), output_dict=True)
+        "report":         classification_report(
+            y_test, best_model.predict(X_test), output_dict=True
+        ),
+        "all_results": [(r[0], r[1]) for r in results],
     }
 
     st.session_state[f"{name}_model"]    = best_model
     st.session_state[f"{name}_metadata"] = {"feature_order": list(X.columns)}
 
+    status_ph.success(
+        f"🏆 **{best_cname}** selected  |  CV Acc: {best_acc:.1%}  |  "
+        f"Train Acc: {train_acc:.1%}  |  Test Acc: {test_acc:.1%}"
+    )
     return best_model, metrics
 
 
-# ------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # VISUALIZATION HELPERS
-# ------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 def feature_importance_plot(model, X, y=None):
     from sklearn.inspection import permutation_importance
-
     fig, ax = plt.subplots(figsize=(6, 4))
 
     if hasattr(model, "feature_importances_"):
-        # Tree-based models: Gini / impurity importance
         importances = model.feature_importances_
         sorted_idx  = np.argsort(importances)
-        sns.barplot(x=importances[sorted_idx], y=np.array(X.columns)[sorted_idx], ax=ax)
-        ax.set_title("Feature Importance (Gini)")
+        sns.barplot(x=importances[sorted_idx],
+                    y=np.array(X.columns)[sorted_idx], ax=ax)
+        ax.set_title("Feature Importance (Gini / Split)")
         ax.set_xlabel("Importance Score")
-        ax.set_ylabel("Feature")
 
     elif hasattr(model, "coef_"):
-        # Linear / Logistic Regression: use absolute coefficients
         coef = model.coef_
-        if coef.ndim > 1:
-            importances = np.mean(np.abs(coef), axis=0)
-        else:
-            importances = np.abs(coef.flatten())
+        importances = (np.mean(np.abs(coef), axis=0)
+                       if coef.ndim > 1 else np.abs(coef.flatten()))
         sorted_idx = np.argsort(importances)
-        sns.barplot(x=importances[sorted_idx], y=np.array(X.columns)[sorted_idx], ax=ax)
-        ax.set_title("Feature Coefficients (Absolute Value)")
+        sns.barplot(x=importances[sorted_idx],
+                    y=np.array(X.columns)[sorted_idx], ax=ax)
+        ax.set_title("Feature Coefficients (|coef|)")
         ax.set_xlabel("|Coefficient|")
-        ax.set_ylabel("Feature")
 
     elif y is not None:
-        # MLP or other black-box: fall back to permutation importance
         try:
-            result      = permutation_importance(model, X, y, n_repeats=10,
-                                                 random_state=42, n_jobs=-1)
+            result = permutation_importance(model, X, y, n_repeats=10,
+                                            random_state=42, n_jobs=-1)
             importances = result.importances_mean
             sorted_idx  = np.argsort(importances)
-            sns.barplot(x=importances[sorted_idx], y=np.array(X.columns)[sorted_idx], ax=ax)
+            sns.barplot(x=importances[sorted_idx],
+                        y=np.array(X.columns)[sorted_idx], ax=ax)
             ax.set_title("Feature Importance (Permutation)")
-            ax.set_xlabel("Mean Accuracy Drop")
-            ax.set_ylabel("Feature")
+            ax.set_xlabel("Mean Score Drop")
         except Exception as e:
-            ax.text(0.5, 0.5, f"Could not compute importance:\n{e}",
-                    ha="center", va="center", fontsize=10, wrap=True)
+            ax.text(0.5, 0.5, f"Could not compute:\n{e}",
+                    ha="center", va="center", fontsize=9)
             ax.axis("off")
-
     else:
-        ax.text(0.5, 0.5, "Feature importance not available\nfor this model type",
+        ax.text(0.5, 0.5, "Not available for this model type",
                 ha="center", va="center", fontsize=11)
         ax.axis("off")
 
+    ax.set_ylabel("Feature")
     plt.tight_layout()
     return fig
 
 
 def confusion_matrix_plot(model, X, y):
     fig, ax = plt.subplots(figsize=(5, 3))
-    pred = model.predict(X)
-    cm = confusion_matrix(y, pred)
+    cm = confusion_matrix(y, model.predict(X))
     sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax)
     ax.set_title("Confusion Matrix")
     return fig
 
 
-# ------------------------------------------------------------
-# PDF GENERATOR
-# ------------------------------------------------------------
+def all_candidates_chart(all_results, scoring_label):
+    """Final sorted bar chart of all candidates for the PDF."""
+    fig, ax = plt.subplots(figsize=(6, max(2.5, 0.5 * len(all_results))))
+    names  = [r[0] for r in all_results]
+    scores = [max(r[1], 0) for r in all_results]
+    colors = ["#27ae60"] + ["#4e8cff"] * (len(names) - 1)
+    ax.barh(names[::-1], scores[::-1], color=colors[::-1])
+    ax.set_xlabel(scoring_label)
+    ax.set_title(f"All Candidates — CV {scoring_label}")
+    for i, s in enumerate(scores[::-1]):
+        ax.text(s + 0.002, i, f"{s:.4f}", va="center", fontsize=8)
+    plt.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PDF GENERATOR  (unchanged structure, just pass all_results fig)
+# ─────────────────────────────────────────────────────────────────────────────
 def export_pdf(title, metrics, figs):
     import datetime
     from reportlab.lib import colors
     from reportlab.lib.units import mm
     from reportlab.platypus import HRFlowable, Table, TableStyle
     from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.enums import TA_LEFT, TA_CENTER
+    from reportlab.lib.enums import TA_CENTER
 
-    buf = BytesIO()
+    buf       = BytesIO()
     base_font = "DejaVu"
 
-    # ── Styles ────────────────────────────────────────────────
     cover_title_style = ParagraphStyle("CoverTitle", fontName=base_font,
         fontSize=22, leading=28, alignment=TA_CENTER, spaceAfter=6)
-    cover_sub_style   = ParagraphStyle("CoverSub", fontName=base_font,
+    cover_sub_style   = ParagraphStyle("CoverSub",   fontName=base_font,
         fontSize=11, leading=14, alignment=TA_CENTER,
         textColor=colors.HexColor("#555555"), spaceAfter=4)
-    section_style     = ParagraphStyle("Section", fontName=base_font,
+    section_style     = ParagraphStyle("Section",    fontName=base_font,
         fontSize=13, leading=16, textColor=colors.HexColor("#1a1a2e"),
         spaceAfter=6, spaceBefore=14)
-    body_style        = ParagraphStyle("Body", fontName=base_font,
+    body_style        = ParagraphStyle("Body",       fontName=base_font,
         fontSize=10, leading=14, spaceAfter=3)
-    caption_style     = ParagraphStyle("Caption", fontName=base_font,
-        fontSize=9, leading=12, textColor=colors.HexColor("#444444"),
+    caption_style     = ParagraphStyle("Caption",    fontName=base_font,
+        fontSize=9,  leading=12, textColor=colors.HexColor("#444444"),
         alignment=TA_CENTER, spaceAfter=10, spaceBefore=4)
-    kv_key_style      = ParagraphStyle("KVKey", fontName=base_font,
+    kv_key_style      = ParagraphStyle("KVKey",      fontName=base_font,
         fontSize=10, leading=13, textColor=colors.HexColor("#333333"))
-    kv_val_style      = ParagraphStyle("KVVal", fontName=base_font,
+    kv_val_style      = ParagraphStyle("KVVal",      fontName=base_font,
         fontSize=10, leading=13, textColor=colors.HexColor("#1a1a2e"))
-    footer_style      = ParagraphStyle("Footer", fontName=base_font,
-        fontSize=8, textColor=colors.HexColor("#888888"), alignment=TA_CENTER)
+    footer_style      = ParagraphStyle("Footer",     fontName=base_font,
+        fontSize=8,  textColor=colors.HexColor("#888888"), alignment=TA_CENTER)
 
-    doc = SimpleDocTemplate(
-        buf, pagesize=A4,
+    doc = SimpleDocTemplate(buf, pagesize=A4,
         leftMargin=20*mm, rightMargin=20*mm,
-        topMargin=18*mm, bottomMargin=18*mm
-    )
+        topMargin=18*mm, bottomMargin=18*mm)
     story = []
 
-    # ── Cover header ──────────────────────────────────────────
     story.append(Spacer(1, 8*mm))
     story.append(Paragraph("Automotive Decision Intelligence Platform", cover_sub_style))
     story.append(Paragraph(title, cover_title_style))
     story.append(Paragraph(
         f"Generated: {datetime.datetime.now().strftime('%d %B %Y, %H:%M')}",
-        cover_sub_style
-    ))
+        cover_sub_style))
     story.append(Spacer(1, 4*mm))
     story.append(HRFlowable(width="100%", thickness=1.5,
                              color=colors.HexColor("#4e8cff"), spaceAfter=6*mm))
 
-    # ── Per-model intro ───────────────────────────────────────
     intros = {
-        "Energy Prediction Model": (
-            "This report documents the results of AutoML training for the Energy Prediction model. "
-            "Three regression algorithms were evaluated — Random Forest, Gradient Boosting, and "
-            "Linear Regression — and the best-performing model was automatically selected based on "
-            "R² score. The report includes performance metrics, feature importance, and training "
-            "data visualizations to support model interpretation."
-        ),
-        "Efficiency Classifier": (
-            "This report documents AutoML training for the Efficiency Classifier, which predicts "
-            "whether a machine operates at Low, Medium, or High efficiency. Three classifiers were "
-            "evaluated — Random Forest, Logistic Regression, and MLP — and the best was selected "
-            "by accuracy. The confusion matrix and feature importance below reveal how well the "
-            "model distinguishes between efficiency tiers."
-        ),
-        "Emission Classifier": (
-            "This report documents AutoML training for the Emission Classifier, which predicts "
-            "the emission class (Low / Medium / High) for a given set of operating conditions. "
-            "The confusion matrix shows per-class prediction accuracy, while feature importance "
-            "identifies which operating variables most strongly drive emission class."
-        ),
-        "Maintenance Model": (
-            "This report documents AutoML training for the Maintenance Risk classifier, which "
-            "predicts whether maintenance risk is Low, Medium, or High. Understanding which "
-            "features drive risk classification helps maintenance teams prioritise inspections "
-            "and prevent unplanned downtime."
-        ),
+        "Energy Prediction Model":
+            "AutoML evaluated RandomForest, ExtraTrees, GradientBoosting, Ridge"
+            + (", XGBoost" if HAS_XGB else "")
+            + (", LightGBM" if HAS_LGBM else "")
+            + " for energy regression. The best model was selected by 5-fold CV R².",
+        "Efficiency Classifier":
+            "AutoML evaluated RandomForest, ExtraTrees, GradientBoosting, "
+            "LogisticRegression, MLP"
+            + (", XGBoost" if HAS_XGB else "")
+            + (", LightGBM" if HAS_LGBM else "")
+            + " for efficiency classification. Best selected by CV accuracy.",
+        "Emission Classifier":
+            "AutoML evaluated the full classifier pool for emission class prediction.",
+        "Maintenance Model":
+            "AutoML evaluated the full classifier pool for maintenance risk prediction.",
     }
     story.append(Paragraph(
-        intros.get(title, "AutoML training report for the automotive intelligence platform."),
-        body_style
-    ))
+        intros.get(title, "AutoML training report."), body_style))
     story.append(Spacer(1, 6*mm))
 
-    # ── Section 1 — Model Performance ────────────────────────
+    # Section 1 — Metrics
     story.append(HRFlowable(width="100%", thickness=0.5,
                              color=colors.HexColor("#cccccc"), spaceAfter=4))
     story.append(Paragraph("1. Model Performance Metrics", section_style))
@@ -381,95 +582,63 @@ def export_pdf(title, metrics, figs):
     is_regression = "r2" in metrics
 
     if is_regression:
-        story.append(Paragraph(
-            "The energy model is evaluated as a regression task. Model selection used 5-fold CV on "
-            "the training set (80% of data). Final metrics are reported on the held-out test set (20%) "
-            "which was never seen during training or model selection.",
-            body_style
-        ))
-        story.append(Spacer(1, 3*mm))
-
         metric_data = [
             ["Metric", "Value", "Interpretation"],
-            [Paragraph("Best Algorithm Selected", kv_key_style),
+            [Paragraph("Best Algorithm", kv_key_style),
              Paragraph(str(metrics.get("best_model", "—")), kv_val_style),
-             Paragraph("Algorithm with highest CV R² on training set", kv_key_style)],
-            [Paragraph("CV R² (Train Set)", kv_key_style),
+             Paragraph("Highest CV R² on training set", kv_key_style)],
+            [Paragraph("CV R² (Train)", kv_key_style),
              Paragraph(f"{metrics.get('r2', 0):.4f}", kv_val_style),
-             Paragraph("5-fold CV R² — used for model selection", kv_key_style)],
+             Paragraph("5-fold CV R² — model selection criterion", kv_key_style)],
             [Paragraph("Train R²", kv_key_style),
              Paragraph(f"{metrics.get('train_r2', 0):.4f}", kv_val_style),
-             Paragraph("R² on training data — compare with Test R² for overfitting check", kv_key_style)],
-            [Paragraph("Test R² (Held-Out)", kv_key_style),
+             Paragraph("Compare with Test R² for overfitting check", kv_key_style)],
+            [Paragraph("Test R²", kv_key_style),
              Paragraph(f"{metrics.get('test_r2', 0):.4f}", kv_val_style),
-             Paragraph("Unbiased generalisation estimate on 20% held-out test set", kv_key_style)],
-            [Paragraph("Test MAE (Held-Out)", kv_key_style),
+             Paragraph("Unbiased estimate on 20% held-out test set", kv_key_style)],
+            [Paragraph("Test MAE", kv_key_style),
              Paragraph(f"{metrics.get('mae', 0):.4f} kWh", kv_val_style),
-             Paragraph("Mean Absolute Error on test set in kWh; lower is better", kv_key_style)],
+             Paragraph("Mean Absolute Error in kWh on test set", kv_key_style)],
         ]
     else:
-        story.append(Paragraph(
-            "The classifier uses 5-fold CV on the training set (80% of data) for model selection. "
-            "Final accuracy and the classification report are computed on the held-out test set (20%) "
-            "which was never seen during training or model selection.",
-            body_style
-        ))
-        story.append(Spacer(1, 3*mm))
-
-        report = metrics.get("report", {})
+        report     = metrics.get("report", {})
         class_rows = {k: v for k, v in report.items()
                       if k not in ("accuracy", "macro avg", "weighted avg")}
-
         metric_data = [["Metric", "Value", "Interpretation"]]
-        metric_data.append([
-            Paragraph("Best Algorithm Selected", kv_key_style),
-            Paragraph(str(metrics.get("best_model", "—")), kv_val_style),
-            Paragraph("Algorithm with highest CV accuracy on training set", kv_key_style)
-        ])
-        metric_data.append([
-            Paragraph("CV Accuracy (Train Set)", kv_key_style),
-            Paragraph(f"{metrics.get('accuracy', 0)*100:.1f}%", kv_val_style),
-            Paragraph("5-fold CV accuracy — used for model selection", kv_key_style)
-        ])
-        metric_data.append([
-            Paragraph("Train Accuracy", kv_key_style),
-            Paragraph(f"{metrics.get('train_accuracy', 0)*100:.1f}%", kv_val_style),
-            Paragraph("Accuracy on training data — compare with Test Accuracy for overfitting check", kv_key_style)
-        ])
-        metric_data.append([
-            Paragraph("Test Accuracy (Held-Out)", kv_key_style),
-            Paragraph(f"{metrics.get('test_accuracy', 0)*100:.1f}%", kv_val_style),
-            Paragraph("Unbiased generalisation estimate on 20% held-out test set", kv_key_style)
-        ])
+        for label, key, interp in [
+            ("Best Algorithm",    "best_model",     "Highest CV accuracy"),
+            ("CV Accuracy",       "accuracy",       "5-fold CV — model selection criterion"),
+            ("Train Accuracy",    "train_accuracy", "Compare with Test for overfitting check"),
+            ("Test Accuracy",     "test_accuracy",  "Unbiased estimate on 20% held-out test set"),
+        ]:
+            val = metrics.get(key, 0)
+            fmt = f"{val*100:.1f}%" if isinstance(val, float) else str(val)
+            metric_data.append([
+                Paragraph(label, kv_key_style),
+                Paragraph(fmt,   kv_val_style),
+                Paragraph(interp, kv_key_style),
+            ])
 
-    # Render summary metrics table
     t = Table(metric_data, colWidths=[65*mm, 40*mm, 65*mm])
     t.setStyle(TableStyle([
-        ("BACKGROUND",     (0, 0), (-1, 0),  colors.HexColor("#4e8cff")),
-        ("TEXTCOLOR",      (0, 0), (-1, 0),  colors.white),
-        ("FONTNAME",       (0, 0), (-1, 0),  base_font),
-        ("FONTSIZE",       (0, 0), (-1, 0),  10),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+        ("BACKGROUND",     (0,0), (-1,0), colors.HexColor("#4e8cff")),
+        ("TEXTCOLOR",      (0,0), (-1,0), colors.white),
+        ("FONTNAME",       (0,0), (-1,0), base_font),
+        ("FONTSIZE",       (0,0), (-1,0), 10),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1),
          [colors.HexColor("#f5f7ff"), colors.white]),
-        ("GRID",           (0, 0), (-1, -1),  0.4, colors.HexColor("#dddddd")),
-        ("LEFTPADDING",    (0, 0), (-1, -1),  6),
-        ("RIGHTPADDING",   (0, 0), (-1, -1),  6),
-        ("TOPPADDING",     (0, 0), (-1, -1),  4),
-        ("BOTTOMPADDING",  (0, 0), (-1, -1),  4),
+        ("GRID",           (0,0), (-1,-1), 0.4, colors.HexColor("#dddddd")),
+        ("LEFTPADDING",    (0,0), (-1,-1), 6),
+        ("RIGHTPADDING",   (0,0), (-1,-1), 6),
+        ("TOPPADDING",     (0,0), (-1,-1), 4),
+        ("BOTTOMPADDING",  (0,0), (-1,-1), 4),
     ]))
     story.append(t)
     story.append(Spacer(1, 4*mm))
 
-    # Per-class breakdown table for classifiers
     if not is_regression and class_rows:
         story.append(Paragraph("Per-Class Breakdown", section_style))
-        story.append(Paragraph(
-            "The table below shows precision, recall, F1-score, and support for each predicted class.",
-            body_style
-        ))
-        story.append(Spacer(1, 2*mm))
-
-        class_data = [["Class", "Precision", "Recall", "F1-Score", "Support"]]
+        class_data = [["Class", "Precision", "Recall", "F1", "Support"]]
         for cls, vals in sorted(class_rows.items()):
             class_data.append([
                 Paragraph(cls, kv_key_style),
@@ -478,8 +647,6 @@ def export_pdf(title, metrics, figs):
                 Paragraph(f"{vals['f1-score']:.2%}", kv_val_style),
                 Paragraph(str(int(vals['support'])), kv_val_style),
             ])
-
-        # Macro / weighted avg rows
         for avg_key in ("macro avg", "weighted avg"):
             if avg_key in report:
                 v = report[avg_key]
@@ -490,80 +657,62 @@ def export_pdf(title, metrics, figs):
                     Paragraph(f"{v['f1-score']:.2%}", kv_val_style),
                     Paragraph("—", kv_key_style),
                 ])
-
         t2 = Table(class_data, colWidths=[40*mm, 30*mm, 30*mm, 30*mm, 25*mm])
         t2.setStyle(TableStyle([
-            ("BACKGROUND",     (0, 0), (-1, 0),  colors.HexColor("#27ae60")),
-            ("TEXTCOLOR",      (0, 0), (-1, 0),  colors.white),
-            ("FONTNAME",       (0, 0), (-1, 0),  base_font),
-            ("FONTSIZE",       (0, 0), (-1, 0),  10),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -3),
+            ("BACKGROUND",  (0,0), (-1,0), colors.HexColor("#27ae60")),
+            ("TEXTCOLOR",   (0,0), (-1,0), colors.white),
+            ("FONTNAME",    (0,0), (-1,0), base_font),
+            ("FONTSIZE",    (0,0), (-1,0), 10),
+            ("ROWBACKGROUNDS",(0,1),(-1,-3),
              [colors.HexColor("#f0fff4"), colors.white]),
-            ("BACKGROUND",     (0, -2), (-1, -1), colors.HexColor("#e8e8e8")),
-            ("GRID",           (0, 0), (-1, -1),  0.4, colors.HexColor("#dddddd")),
-            ("LEFTPADDING",    (0, 0), (-1, -1),  6),
-            ("RIGHTPADDING",   (0, 0), (-1, -1),  6),
-            ("TOPPADDING",     (0, 0), (-1, -1),  4),
-            ("BOTTOMPADDING",  (0, 0), (-1, -1),  4),
+            ("BACKGROUND",  (0,-2),(-1,-1), colors.HexColor("#e8e8e8")),
+            ("GRID",        (0,0), (-1,-1), 0.4, colors.HexColor("#dddddd")),
+            ("LEFTPADDING", (0,0), (-1,-1), 6),
+            ("RIGHTPADDING",(0,0), (-1,-1), 6),
+            ("TOPPADDING",  (0,0), (-1,-1), 4),
+            ("BOTTOMPADDING",(0,0),(-1,-1), 4),
         ]))
         story.append(t2)
         story.append(Spacer(1, 6*mm))
 
-    # ── Section 2 — Visual Analytics ─────────────────────────
+    # Section 2 — Visual Analytics
     story.append(HRFlowable(width="100%", thickness=0.5,
                              color=colors.HexColor("#cccccc"), spaceAfter=4))
     story.append(Paragraph("2. Visual Analytics", section_style))
     story.append(Paragraph(
-        "The charts below were produced during training. They support model interpretation "
-        "and help identify which features most influence the model's predictions.",
-        body_style
-    ))
+        "Charts produced during training for model interpretation.", body_style))
     story.append(Spacer(1, 3*mm))
 
-    # Chart metadata keyed by title — order matches: confusion matrix first, then feature importance
     chart_info = {
         "Energy Prediction Model": [
+            ("All Candidates — CV R²",
+             "CV R² scores for all evaluated algorithms. The green bar is the selected model."),
             ("Feature Importance",
-             "Relative importance of each input feature as determined by the best-selected model. "
-             "Features with higher importance have a stronger influence on predicted energy consumption. "
-             "Focus operational improvements on the top-ranked features for maximum impact."),
+             "Relative importance of each input feature for predicting energy consumption."),
         ],
         "Efficiency Classifier": [
+            ("All Candidates — CV Accuracy",
+             "CV accuracy for all evaluated algorithms. Green bar = selected model."),
             ("Confusion Matrix",
-             "Each cell shows how many samples of the actual class (rows) were predicted as each class (columns). "
-             "A perfect model has all counts on the diagonal. Off-diagonal values indicate misclassifications "
-             "— review these to understand where the model struggles between adjacent efficiency tiers."),
+             "Predicted vs actual efficiency class. Diagonal = correct predictions."),
             ("Feature Importance",
-             "Relative importance of each input feature for predicting efficiency class. "
-             "Features ranked highest are the strongest discriminators between Low, Medium, and High efficiency."),
+             "Strongest discriminators between Low / Medium / High efficiency."),
         ],
         "Emission Classifier": [
-            ("Confusion Matrix",
-             "Shows predicted vs actual emission class counts. Diagonal cells are correct predictions; "
-             "off-diagonal cells are misclassifications. High off-diagonal counts between adjacent classes "
-             "(e.g. Low vs Medium) indicate borderline operating conditions."),
-            ("Feature Importance",
-             "Relative importance of each input feature for predicting emission class. "
-             "The top features represent the primary operational levers for reducing emissions."),
+            ("All Candidates — CV Accuracy", "CV accuracy for all evaluated algorithms."),
+            ("Confusion Matrix", "Predicted vs actual emission class counts."),
+            ("Feature Importance", "Primary drivers of emission class prediction."),
         ],
         "Maintenance Model": [
+            ("All Candidates — CV Accuracy", "CV accuracy for all evaluated algorithms."),
             ("Confusion Matrix",
-             "Shows predicted vs actual maintenance risk counts. Pay particular attention to "
-             "High-risk samples misclassified as Low-risk — these false negatives represent "
-             "the greatest operational hazard."),
+             "High-risk samples misclassified as Low-risk are the most critical errors."),
             ("Feature Importance",
-             "Relative importance of each input feature for predicting maintenance risk. "
-             "High-importance features are the most reliable early-warning indicators and "
-             "should be prioritised in sensor monitoring and inspection schedules."),
+             "Early-warning indicators for maintenance risk."),
         ],
     }
 
     captions = chart_info.get(title, [])
-    # If classifier, there are 2 figs (confusion matrix + feature importance);
-    # if regression (energy), only 1 fig (feature importance) — align captions accordingly
-    if not is_regression and len(captions) < len(figs):
-        captions = [("Chart", "Training visualization.")] * len(figs)
-
     for i, fig in enumerate(figs):
         img = BytesIO()
         fig.savefig(img, format="png", dpi=150, bbox_inches="tight")
@@ -575,25 +724,21 @@ def export_pdf(title, metrics, figs):
             story.append(Paragraph(chart_caption, caption_style))
         story.append(Spacer(1, 4*mm))
 
-    # ── Footer ────────────────────────────────────────────────
     story.append(Spacer(1, 6*mm))
     story.append(HRFlowable(width="100%", thickness=0.5,
                              color=colors.HexColor("#cccccc"), spaceAfter=4))
     story.append(Paragraph(
-        "This report was auto-generated by the Automotive Decision Intelligence Platform. "
-        "Model metrics are computed on training data. For production use, evaluate on a "
-        "held-out test set to obtain unbiased performance estimates.",
-        footer_style
-    ))
+        "Auto-generated by the Automotive Decision Intelligence Platform. "
+        "All metrics computed on held-out test data.", footer_style))
 
     doc.build(story)
     buf.seek(0)
     return buf
 
 
-# ------------------------------------------------------------
-# REQUIRED FEATURES PER MODEL
-# ------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# REQUIRED FEATURES
+# ─────────────────────────────────────────────────────────────────────────────
 REQUIRED_FEATURES = {
     "energy": [
         "production_load", "cycle_time", "machine_temperature", "axis_speed",
@@ -614,17 +759,14 @@ REQUIRED_FEATURES = {
 }
 
 
-# ------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # TAB HANDLER
-# ------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 def handle_tab(upload_key, model_title, train_fn, model_name):
-
     uploaded = st.file_uploader(
         f"Upload dataset for **{model_title}**",
-        type=["csv", "xlsx"],
-        key=upload_key
+        type=["csv", "xlsx"], key=upload_key
     )
-
     if not uploaded:
         return
 
@@ -635,122 +777,131 @@ def handle_tab(upload_key, model_title, train_fn, model_name):
         st.info("👆 Please upload a **CSV (.csv)** or **Excel (.xlsx / .xls)** file.")
         return
 
-    # ── FEATURE VALIDATION ────────────────────────────────────
-    required = REQUIRED_FEATURES.get(model_name, [])
+    required     = REQUIRED_FEATURES.get(model_name, [])
     missing_cols = [c for c in required if c not in df.columns]
     if missing_cols:
         st.error(
-            f"❌ **Incorrect dataset.** The following required columns are missing:\n\n" +
+            "❌ **Incorrect dataset.** Missing columns:\n\n" +
             "\n".join(f"- `{c}`" for c in missing_cols)
         )
-        st.info("👆 Please refer to the **Required Dataset Format** above and re-upload the correct file.")
+        st.info("👆 Please refer to the Required Dataset Format above.")
         return
-    # ─────────────────────────────────────────────────────────
+
     st.write("### Raw Data Preview", df.head())
 
-    # 1. Clean + Scale
     cleaned, scaled, imputer, scaler = preprocess(df)
-
-    # 2. Add Feature Engineering
     engineered = add_automotive_features(cleaned)
     st.write("### Engineered Features", engineered.head())
 
-    # 3. Detect target
     target = find_target(df)
     if not target:
         st.error("❌ Could not detect target column automatically.")
         return
 
-    # 4. Train
-    if st.button(f"🚀 Train {model_title}"):
+    # Show candidate pool
+    is_regression = (target == "energy")
+    cands = get_regression_candidates() if is_regression else get_classifier_candidates()
+    st.info(
+        f"🤖 **{len(cands)} candidates** will be evaluated in parallel: "
+        + ", ".join(f"`{k}`" for k in cands.keys())
+    )
 
-        with st.spinner("Auto-selecting best model…"):
-            model, metrics = train_fn(engineered, target)
+    if not st.button(f"🚀 Train {model_title}"):
+        return
 
-        st.success(f"{model_title} trained successfully!")
+    st.markdown("---")
+    st.subheader("⚡ Training in Progress")
 
-        # ── METRICS VISUALIZATION ──────────────────────────────────────
-        st.subheader("📊 Model Evaluation Metrics")
+    # Placeholders — all visible before training starts
+    profile_ph    = st.empty()
+    progress_ph   = st.progress(0, text="Starting…")
+    st.markdown("#### 🏆 Live Candidate Scoreboard")
+    scoreboard_ph = st.empty()
+    status_ph     = st.empty()
 
-        if "r2" in metrics:
-            # --- REGRESSION (Energy model) ---
-            m1, m2, m3, m4, m5 = st.columns(5)
-            m1.metric("🏆 Best Model", metrics["best_model"])
-            m2.metric("CV R²", f"{metrics['r2']:.4f}",
-                      help="5-fold CV R² on training set — used for model selection.")
-            m3.metric("Train R²", f"{metrics.get('train_r2', 0):.4f}",
-                      help="R² on training data. Compare with Test R² to check for overfitting.")
-            m4.metric("Test R²", f"{metrics.get('test_r2', 0):.4f}",
-                      help="R² on the held-out 20% test set — the unbiased generalisation estimate.")
-            m5.metric("Test MAE", f"{metrics['mae']:.4f} kWh",
-                      help="Mean Absolute Error on the held-out test set. Lower is better.")
-
-        else:
-            # --- CLASSIFIER (Efficiency / Emission / Maintenance) ---
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("🏆 Best Model", metrics["best_model"])
-            m2.metric("CV Accuracy", f"{metrics['accuracy']*100:.1f}%",
-                      help="5-fold CV accuracy on training set — used for model selection.")
-            m3.metric("Train Accuracy", f"{metrics.get('train_accuracy', 0)*100:.1f}%",
-                      help="Accuracy on training data. Compare with Test Accuracy to check for overfitting.")
-            m4.metric("Test Accuracy", f"{metrics.get('test_accuracy', 0)*100:.1f}%",
-                      help="Accuracy on the held-out 20% test set — the unbiased generalisation estimate.")
-
-            # Per-class precision / recall / f1 table
-            report = metrics["report"]
-            class_rows = {k: v for k, v in report.items()
-                          if k not in ("accuracy", "macro avg", "weighted avg")}
-
-            if class_rows:
-                st.markdown("**Per-Class Performance**")
-                report_df = pd.DataFrame(class_rows).T[["precision", "recall", "f1-score", "support"]]
-                report_df.index.name = "Class"
-                report_df["precision"] = report_df["precision"].map("{:.2%}".format)
-                report_df["recall"]    = report_df["recall"].map("{:.2%}".format)
-                report_df["f1-score"]  = report_df["f1-score"].map("{:.2%}".format)
-                report_df["support"]   = report_df["support"].astype(int)
-                report_df.columns     = ["Precision", "Recall", "F1-Score", "Support"]
-                st.dataframe(report_df, use_container_width=True)
-
-            # Macro / Weighted avg summary
-            avg_rows = {k: v for k, v in report.items()
-                        if k in ("macro avg", "weighted avg")}
-            if avg_rows:
-                st.markdown("**Aggregate Averages**")
-                avg_df = pd.DataFrame(avg_rows).T[["precision", "recall", "f1-score"]]
-                avg_df.index.name = "Average"
-                avg_df["precision"] = avg_df["precision"].map("{:.2%}".format)
-                avg_df["recall"]    = avg_df["recall"].map("{:.2%}".format)
-                avg_df["f1-score"]  = avg_df["f1-score"].map("{:.2%}".format)
-                avg_df.columns      = ["Precision", "Recall", "F1-Score"]
-                st.dataframe(avg_df, use_container_width=True)
-        # ──────────────────────────────────────────────────────────────
-
-        # 5. Visuals
-        figs = []
-
-        X = engineered.drop(columns=[target])
-        y = engineered[target]
-
-        if target != "energy":
-            figs.append(confusion_matrix_plot(model, X, y))
-
-        figs.append(feature_importance_plot(model, X, y))
-
-        # 6. PDF
-        pdf = export_pdf(model_title, metrics, figs)
-
-        st.download_button(
-            f"📄 Download {model_title} Report",
-            data=pdf,
-            file_name=f"{model_name}_report.pdf",
-            mime="application/pdf"
+    with st.spinner("Training all candidates in parallel…"):
+        model, metrics = train_fn(
+            engineered, target,
+            profile_ph, progress_ph, scoreboard_ph, status_ph
         )
 
+    if model is None or metrics is None:
+        return
 
-# ------------------------------------------------------------
+    progress_ph.progress(1.0, text="✅ All candidates evaluated")
+
+    st.markdown("---")
+    st.subheader("📊 Final Model Evaluation")
+
+    if "r2" in metrics:
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("🏆 Best Model", metrics["best_model"])
+        m2.metric("CV R²",    f"{metrics['r2']:.4f}")
+        m3.metric("Train R²", f"{metrics.get('train_r2', 0):.4f}")
+        m4.metric("Test R²",  f"{metrics.get('test_r2', 0):.4f}")
+        m5.metric("Test MAE", f"{metrics['mae']:.4f} kWh")
+    else:
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("🏆 Best Model",   metrics["best_model"])
+        m2.metric("CV Accuracy",     f"{metrics['accuracy']*100:.1f}%")
+        m3.metric("Train Accuracy",  f"{metrics.get('train_accuracy', 0)*100:.1f}%")
+        m4.metric("Test Accuracy",   f"{metrics.get('test_accuracy', 0)*100:.1f}%")
+
+        report     = metrics["report"]
+        class_rows = {k: v for k, v in report.items()
+                      if k not in ("accuracy", "macro avg", "weighted avg")}
+        if class_rows:
+            st.markdown("**Per-Class Performance**")
+            rdf = pd.DataFrame(class_rows).T[["precision","recall","f1-score","support"]]
+            rdf.index.name = "Class"
+            for col in ["precision","recall","f1-score"]:
+                rdf[col] = rdf[col].map("{:.2%}".format)
+            rdf["support"] = rdf["support"].astype(int)
+            rdf.columns    = ["Precision","Recall","F1-Score","Support"]
+            st.dataframe(rdf, use_container_width=True)
+
+        avg_rows = {k: v for k, v in report.items()
+                    if k in ("macro avg", "weighted avg")}
+        if avg_rows:
+            st.markdown("**Aggregate Averages**")
+            adf = pd.DataFrame(avg_rows).T[["precision","recall","f1-score"]]
+            adf.index.name = "Average"
+            for col in ["precision","recall","f1-score"]:
+                adf[col] = adf[col].map("{:.2%}".format)
+            adf.columns = ["Precision","Recall","F1-Score"]
+            st.dataframe(adf, use_container_width=True)
+
+    # Visuals for PDF
+    figs = []
+    scoring_label = "R²" if is_regression else "Accuracy"
+    figs.append(all_candidates_chart(metrics["all_results"], scoring_label))
+
+    X = engineered.drop(columns=[target])
+    y = engineered[target]
+
+    if target != "energy":
+        figs.append(confusion_matrix_plot(model, X, y))
+
+    figs.append(feature_importance_plot(model, X, y))
+
+    # Show the static charts in UI too
+    vis_cols = st.columns(min(len(figs), 3))
+    for i, fig in enumerate(figs):
+        with vis_cols[i % len(vis_cols)]:
+            st.pyplot(fig)
+
+    pdf = export_pdf(model_title, metrics, figs)
+    st.download_button(
+        f"📄 Download {model_title} Report",
+        data=pdf,
+        file_name=f"{model_name}_report.pdf",
+        mime="application/pdf"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # TABS
-# ------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4 = st.tabs([
     "⚡ Energy Model",
     "📈 Efficiency Classifier",
@@ -761,89 +912,69 @@ tab1, tab2, tab3, tab4 = st.tabs([
 with tab1:
     with st.expander("📋 Required Dataset Format", expanded=True):
         st.markdown("""
-**Your CSV / Excel file must contain these columns:**
-
 | Column | Type | Description |
 |---|---|---|
-| `production_load` | float (0–1) | Machine load as a fraction of max capacity |
-| `cycle_time` | float (s) | Time to complete one production cycle |
-| `machine_temperature` | float (°C) | Operating temperature of the machine |
-| `axis_speed` | float (m/s) | Speed of the machine axis |
-| `tool_wear` | float (0–1) | Degree of tool wear |
-| `ambient_humidity` | float (%) | Ambient humidity level |
-| `vibration_level` | float | Vibration sensor reading |
+| `production_load` | float (0–1) | Machine load as fraction of max capacity |
+| `cycle_time` | float (s) | Time per production cycle |
+| `machine_temperature` | float (°C) | Operating temperature |
+| `axis_speed` | float (m/s) | Axis speed |
+| `tool_wear` | float (0–1) | Tool wear |
+| `ambient_humidity` | float (%) | Ambient humidity |
+| `vibration_level` | float | Vibration reading |
 | `power_factor` | float (0–1) | Electrical power factor |
-| `energy` ⭐ | float (kWh) | **Target column** — energy consumption to predict |
-        """)
-    handle_tab(
-        upload_key="energy_data",
-        model_title="Energy Prediction Model",
-        train_fn=lambda df, t: train_energy(df, t),
-        model_name="energy"
-    )
+| `energy` ⭐ | float (kWh) | **Target** |
+""")
+    handle_tab("energy_data",     "Energy Prediction Model",
+               lambda df, t, p, pr, s, st_: train_energy(df, t, p, pr, s, st_),
+               "energy")
 
 with tab2:
     with st.expander("📋 Required Dataset Format", expanded=True):
         st.markdown("""
-**Your CSV / Excel file must contain these columns:**
-
 | Column | Type | Description |
 |---|---|---|
-| `production_load` | float (0–1) | Machine load as a fraction of max capacity |
-| `cycle_time` | float (s) | Time to complete one production cycle |
-| `machine_temperature` | float (°C) | Operating temperature of the machine |
-| `axis_speed` | float (m/s) | Speed of the machine axis |
-| `vibration_signal` | float | Vibration sensor signal reading |
-| `power_factor` | float (0–1) | Electrical power factor |
-| `efficiency_class` ⭐ | string | **Target column** — one of `Low`, `Medium`, `High` |
-        """)
-    handle_tab(
-        upload_key="efficiency_data",
-        model_title="Efficiency Classifier",
-        train_fn=lambda df, t: train_classifier(df, t, "efficiency"),
-        model_name="efficiency"
-    )
+| `production_load` | float (0–1) | Machine load |
+| `cycle_time` | float (s) | Cycle time |
+| `machine_temperature` | float (°C) | Temperature |
+| `axis_speed` | float (m/s) | Axis speed |
+| `vibration_signal` | float | Vibration signal |
+| `power_factor` | float (0–1) | Power factor |
+| `efficiency_class` ⭐ | string | **Target** — `Low`/`Medium`/`High` |
+""")
+    handle_tab("efficiency_data", "Efficiency Classifier",
+               lambda df, t, p, pr, s, st_: train_classifier(df, t, "efficiency", p, pr, s, st_),
+               "efficiency")
 
 with tab3:
     with st.expander("📋 Required Dataset Format", expanded=True):
         st.markdown("""
-**Your CSV / Excel file must contain these columns:**
-
 | Column | Type | Description |
 |---|---|---|
-| `production_load` | float (0–1) | Machine load as a fraction of max capacity |
-| `cycle_time` | float (s) | Time to complete one production cycle |
-| `machine_temperature` | float (°C) | Operating temperature of the machine |
-| `axis_speed` | float (m/s) | Speed of the machine axis |
-| `power_factor` | float (0–1) | Electrical power factor |
-| `emission_class` ⭐ | string | **Target column** — one of `Low`, `Medium`, `High` |
-        """)
-    handle_tab(
-        upload_key="emission_data",
-        model_title="Emission Classifier",
-        train_fn=lambda df, t: train_classifier(df, t, "emission"),
-        model_name="emission"
-    )
+| `production_load` | float (0–1) | Machine load |
+| `cycle_time` | float (s) | Cycle time |
+| `machine_temperature` | float (°C) | Temperature |
+| `axis_speed` | float (m/s) | Axis speed |
+| `power_factor` | float (0–1) | Power factor |
+| `emission_class` ⭐ | string | **Target** — `Low`/`Medium`/`High` |
+""")
+    handle_tab("emission_data",   "Emission Classifier",
+               lambda df, t, p, pr, s, st_: train_classifier(df, t, "emission", p, pr, s, st_),
+               "emission")
 
 with tab4:
     with st.expander("📋 Required Dataset Format", expanded=True):
         st.markdown("""
-**Your CSV / Excel file must contain these columns:**
-
 | Column | Type | Description |
 |---|---|---|
-| `production_load` | float (0–1) | Machine load as a fraction of max capacity |
-| `machine_temperature` | float (°C) | Operating temperature of the machine |
-| `axis_speed` | float (m/s) | Speed of the machine axis |
-| `vibration_level` | float | Vibration sensor reading |
-| `tool_wear` | float (0–1) | Degree of tool wear |
-| `oil_quality` | float (0–1) | Oil quality / degradation score |
-| `pressure` | float | System pressure reading |
-| `maintenance_class` ⭐ | string | **Target column** — one of `Low`, `Medium`, `High` |
-        """)
-    handle_tab(
-        upload_key="maintenance_data",
-        model_title="Maintenance Model",
-        train_fn=lambda df, t: train_classifier(df, t, "maintenance"),
-        model_name="maintenance"
-    )
+| `production_load` | float (0–1) | Machine load |
+| `machine_temperature` | float (°C) | Temperature |
+| `axis_speed` | float (m/s) | Axis speed |
+| `vibration_level` | float | Vibration |
+| `tool_wear` | float (0–1) | Tool wear |
+| `oil_quality` | float (0–1) | Oil quality |
+| `pressure` | float | Pressure |
+| `maintenance_class` ⭐ | string | **Target** — `Low`/`Medium`/`High` |
+""")
+    handle_tab("maintenance_data","Maintenance Model",
+               lambda df, t, p, pr, s, st_: train_classifier(df, t, "maintenance", p, pr, s, st_),
+               "maintenance")
