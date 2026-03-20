@@ -1,98 +1,98 @@
-import joblib
+"""
+model_wrappers.py
+
+Thin wrappers around stored sklearn Pipeline objects.
+Each wrapper knows which session_state key holds its model and what
+default values to use for features not exposed on the Dashboard sliders.
+
+The Pipeline stored in session_state already contains:
+  imputer → variance_threshold → robust_scaler → model
+
+So _build_row just needs to produce a raw DataFrame with the right columns
+in the right order — the Pipeline handles imputation and scaling internally.
+"""
+
 import numpy as np
 import pandas as pd
 import streamlit as st
+from modules.feature_engineering import add_automotive_features
 
 
-# -----------------------------
-#  SHARED FEATURE ENGINEERING
-# -----------------------------
-def apply_engineering(df: pd.DataFrame):
-    df["load_squared"] = df["production_load"] ** 2
-    df["temperature_deviation"] = df["machine_temperature"] - 60
-    df["speed_per_load"] = df["axis_speed"] / (df["production_load"] + 1e-6)
-    return df
-
-
-# ====================================================
-#        GENERIC MODEL WRAPPER BASE CLASS
-# ====================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# BASE WRAPPER
+# ─────────────────────────────────────────────────────────────────────────────
 class BaseWrapper:
     RAW_DEFAULTS = {}
-    MODEL_KEY = ""
-    META_KEY = ""
+    MODEL_KEY    = ""
+    META_KEY     = ""
 
     def __init__(self):
-        # Load from session_state, NOT DISK
-        self.model = st.session_state.get(self.MODEL_KEY)
-        self.meta = st.session_state.get(self.META_KEY, {})
+        self.model        = st.session_state.get(self.MODEL_KEY)
+        self.meta         = st.session_state.get(self.META_KEY, {})
         self.feature_order = self.meta.get("feature_order", [])
 
-    def _build_row(self, load, cycle, temp, speed):
-        df = pd.DataFrame([{
-            "production_load": load,
-            "cycle_time": cycle,
-            "machine_temperature": temp,
-            "axis_speed": speed,
-            **self.RAW_DEFAULTS
-        }])
+    def _build_df(self, loads, cycles, temps, speeds):
+        """
+        Build a DataFrame of N rows with raw sensor values + defaults,
+        then apply the same feature engineering used during training.
+        The Pipeline (stored inside self.model) handles imputation and scaling.
+        """
+        n = len(np.atleast_1d(loads))
+        df = pd.DataFrame({
+            "production_load":     np.full(n, loads)  if np.isscalar(loads)  else np.asarray(loads,  float),
+            "cycle_time":          np.full(n, cycles) if np.isscalar(cycles) else np.asarray(cycles, float),
+            "machine_temperature": np.full(n, temps)  if np.isscalar(temps)  else np.asarray(temps,  float),
+            "axis_speed":          np.full(n, speeds) if np.isscalar(speeds) else np.asarray(speeds, float),
+            **{k: np.full(n, v, dtype=float) for k, v in self.RAW_DEFAULTS.items()}
+        })
 
-        df = apply_engineering(df)
+        # Apply identical feature engineering as during training
+        df = add_automotive_features(df)
 
-        # Ensure all required columns exist
+        # Ensure all columns the model was trained on are present
         for col in self.feature_order:
-            if col not in df:
+            if col not in df.columns:
                 df[col] = 0.0
 
-        return df[self.feature_order].values.astype(float)
+        # Return only the columns in the order the model expects
+        if self.feature_order:
+            return df[self.feature_order]
+        return df
 
     def predict(self, load, cycle, temp, speed):
+        """Single-sample prediction."""
         if self.model is None:
             return None
-        X = self._build_row(load, cycle, temp, speed)
-        return self.model.predict(X)[0]
+        df = self._build_df(load, cycle, temp, speed)
+        return self.model.predict(df)[0]
 
     def predict_batch(self, loads, cycles, temps, speeds):
         """
         Vectorised batch prediction — builds one DataFrame for N samples
-        and calls model.predict once. Orders of magnitude faster than
-        calling predict() in a Python loop.
+        and calls Pipeline.predict once.
+        Orders of magnitude faster than calling predict() in a Python loop.
 
         Parameters: 1-D array-like of length N each.
         Returns: np.ndarray of shape (N,)
         """
         if self.model is None:
             return None
-        n = len(loads)
-        df = pd.DataFrame({
-            "production_load":     np.asarray(loads,  dtype=float),
-            "cycle_time":          np.asarray(cycles, dtype=float),
-            "machine_temperature": np.asarray(temps,  dtype=float),
-            "axis_speed":          np.asarray(speeds, dtype=float),
-            **{k: np.full(n, v, dtype=float) for k, v in self.RAW_DEFAULTS.items()}
-        })
-        df = apply_engineering(df)
-        for col in self.feature_order:
-            if col not in df:
-                df[col] = 0.0
-        X = df[self.feature_order].values.astype(float)
-        return self.model.predict(X)
+        df = self._build_df(loads, cycles, temps, speeds)
+        return self.model.predict(df)
 
 
-
-# ====================================================
-#               INDIVIDUAL MODEL WRAPPERS
-# ====================================================
-
+# ─────────────────────────────────────────────────────────────────────────────
+# INDIVIDUAL MODEL WRAPPERS
+# ─────────────────────────────────────────────────────────────────────────────
 class EnergyModel(BaseWrapper):
     RAW_DEFAULTS = {
-        "tool_wear": 0.5,
-        "ambient_humidity": 50,
-        "vibration_level": 1.0,
-        "power_factor": 0.9
+        "tool_wear":        0.5,
+        "ambient_humidity": 50.0,
+        "vibration_level":  1.0,
+        "power_factor":     0.9,
     }
     MODEL_KEY = "energy_model"
-    META_KEY = "energy_metadata"
+    META_KEY  = "energy_metadata"
 
     def predict(self, load, cycle, temp, speed):
         pred = super().predict(load, cycle, temp, speed)
@@ -104,26 +104,26 @@ class EnergyModel(BaseWrapper):
 class EfficiencyModel(BaseWrapper):
     RAW_DEFAULTS = {
         "vibration_signal": 1.0,
-        "power_factor": 0.9
+        "power_factor":     0.9,
     }
     MODEL_KEY = "efficiency_model"
-    META_KEY = "efficiency_metadata"
+    META_KEY  = "efficiency_metadata"
 
 
 class EmissionModel(BaseWrapper):
     RAW_DEFAULTS = {
-        "power_factor": 0.9
+        "power_factor": 0.9,
     }
     MODEL_KEY = "emission_model"
-    META_KEY = "emission_metadata"
+    META_KEY  = "emission_metadata"
 
 
 class MaintenanceModel(BaseWrapper):
     RAW_DEFAULTS = {
         "vibration_level": 1.0,
-        "tool_wear": 0.5,
-        "oil_quality": 0.7,
-        "pressure": 100
+        "tool_wear":       0.5,
+        "oil_quality":     0.7,
+        "pressure":        100.0,
     }
     MODEL_KEY = "maintenance_model"
-    META_KEY = "maintenance_metadata"
+    META_KEY  = "maintenance_metadata"

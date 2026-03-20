@@ -40,7 +40,10 @@ import plotly.graph_objects as go
 import plotly.express as px
 
 # Modules
-from modules.preprocessing import load_dataset, preprocess
+from modules.preprocessing import (
+    load_dataset, preprocess, build_preprocessing_pipeline,
+    add_missing_indicators, detect_and_winsorise_outliers, encode_target
+)
 from modules.feature_engineering import add_automotive_features
 from modules.storage import ensure_dirs, PATHS
 
@@ -188,22 +191,30 @@ def _train_one(name, model, param_dist, X_train, y_train, scoring, n_iter=10):
         y_fit = y_train
 
     try:
-        if param_dist:
+        # Wrap model in Pipeline: median impute → variance filter → RobustScale → model
+        # This ensures the scaler is ALWAYS fit only on the training fold
+        # inside each CV split — never on validation or test data.
+        from modules.preprocessing import build_preprocessing_pipeline
+        pipeline = build_preprocessing_pipeline(model)
+
+        # Prefix hyperparameter keys with "model__" for Pipeline compatibility
+        pipeline_params = {f"model__{k}": v for k, v in param_dist.items()}
+
+        if pipeline_params:
             search = RandomizedSearchCV(
-                model, param_dist,
+                pipeline, pipeline_params,
                 n_iter=n_iter, cv=5, scoring=scoring,
                 random_state=42, n_jobs=-1
             )
             search.fit(X_train, y_fit)
             fitted = search.best_estimator_
-            # Wrap the fitted model so .predict() returns original string labels
             if le is not None:
                 fitted = _LabelDecodingWrapper(fitted, le)
             return name, float(search.best_score_), fitted, None
         else:
-            scores = cross_val_score(model, X_train, y_fit, cv=5, scoring=scoring)
-            model.fit(X_train, y_fit)
-            fitted = _LabelDecodingWrapper(model, le) if le is not None else model
+            scores = cross_val_score(pipeline, X_train, y_fit, cv=5, scoring=scoring)
+            pipeline.fit(X_train, y_fit)
+            fitted = _LabelDecodingWrapper(pipeline, le) if le is not None else pipeline
             return name, float(scores.mean()), fitted, None
     except Exception as e:
         return name, float("-inf"), None, str(e)
@@ -410,7 +421,9 @@ def train_energy(df, target, profile_ph, progress_ph, scoreboard_ph, status_ph):
     }
 
     st.session_state["energy_model"]    = best_model
-    st.session_state["energy_metadata"] = {"feature_order": list(X.columns)}
+    st.session_state["energy_metadata"] = {
+        "feature_order": list(X_train.columns),  # pre-pipeline column order
+    }
 
     status_ph.success(
         f"🏆 **{best_name}** selected  |  CV R²: {best_cv:.4f}  |  "
@@ -493,7 +506,9 @@ def train_classifier(df, target, name, profile_ph, progress_ph, scoreboard_ph, s
     }
 
     st.session_state[f"{name}_model"]    = best_model
-    st.session_state[f"{name}_metadata"] = {"feature_order": list(X.columns)}
+    st.session_state[f"{name}_metadata"] = {
+        "feature_order": list(X_train.columns),  # pre-pipeline column order
+    }
 
     status_ph.success(
         f"🏆 **{best_cname}** selected  |  CV Acc: {best_acc:.1%}  |  "
@@ -859,14 +874,42 @@ def handle_tab(upload_key, model_title, train_fn, model_name):
 
     st.write("### Raw Data Preview", df.head())
 
-    cleaned, scaled, imputer, scaler = preprocess(df)
-    engineered = add_automotive_features(cleaned)
-    st.write("### Engineered Features", engineered.head())
-
     target = find_target(df)
     if not target:
         st.error("❌ Could not detect target column automatically.")
         return
+
+    # ── Preprocessing steps (shown to user before training) ───────────────
+    # Step 1: Missing value indicators
+    df_indicators = add_missing_indicators(df)
+    missing_added = [c for c in df_indicators.columns if c.endswith("_was_missing")]
+    if missing_added:
+        st.info(f"ℹ️ Added **{len(missing_added)}** missing-value indicator column(s): "
+                + ", ".join(f"`{c}`" for c in missing_added))
+
+    # Step 2: Winsorisation — cap outlier values at IQR fences, no rows removed
+    df_clean, outlier_report = detect_and_winsorise_outliers(df_indicators, target_col=target)
+    if outlier_report:
+        with st.expander(
+            f"⚠️ Winsorised outliers in {len(outlier_report)} column(s) "
+            f"— values capped to IQR fences, all rows kept",
+            expanded=False
+        ):
+            for col, info in outlier_report.items():
+                st.markdown(
+                    f"- **`{col}`** — {info['n_capped']} value(s) capped "
+                    f"to [{info['lower_fence']}, {info['upper_fence']}]"
+                )
+    else:
+        st.success(f"✅ No outliers — all {len(df_clean):,} rows and values intact.")
+
+    # Step 3: Feature engineering
+    engineered = add_automotive_features(df_clean)
+    new_features = [c for c in engineered.columns
+                    if c not in df_clean.columns]
+    st.info(f"🔧 Feature engineering added **{len(new_features)}** derived column(s): "
+            + ", ".join(f"`{f}`" for f in new_features))
+    st.write("### Engineered Features Preview", engineered.head())
 
     # Show candidate pool
     is_regression = (target == "energy")
