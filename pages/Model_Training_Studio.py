@@ -13,11 +13,10 @@ from sklearn.metrics import (
 )
 from sklearn.ensemble import (
     RandomForestRegressor, RandomForestClassifier,
-    GradientBoostingRegressor, GradientBoostingClassifier,
     ExtraTreesRegressor, ExtraTreesClassifier
 )
 from sklearn.linear_model import LogisticRegression, Ridge
-from sklearn.neural_network import MLPClassifier
+from sklearn.neural_network import MLPClassifier, MLPRegressor
 
 # XGBoost / LightGBM — optional, graceful fallback if not installed
 try:
@@ -89,15 +88,17 @@ def get_regression_candidates():
             {"n_estimators": [100, 200, 300], "max_depth": [6, 8, 10, None],
              "min_samples_leaf": [5, 10, 20], "max_features": [0.5, 0.6, 0.8]}
         ),
-        "GradientBoosting": (
-            GradientBoostingRegressor(random_state=42),
-            {"n_estimators": [100, 200], "max_depth": [3, 4, 5],
-             "learning_rate": [0.03, 0.05, 0.1], "subsample": [0.7, 0.8, 1.0],
-             "min_samples_leaf": [5, 10]}
-        ),
         "Ridge": (
             Ridge(),
             {"alpha": [0.01, 0.1, 1.0, 10.0, 100.0]}
+        ),
+        "MLP": (
+            MLPRegressor(max_iter=500, random_state=42),
+            {
+                "hidden_layer_sizes": [(64,), (64, 32), (128, 64)],
+                "alpha":              [0.001, 0.01, 0.05],
+                "learning_rate_init": [0.001, 0.005],
+            }
         ),
     }
     if HAS_XGB:
@@ -129,12 +130,6 @@ def get_classifier_candidates():
             ExtraTreesClassifier(random_state=42),
             {"n_estimators": [100, 200, 300], "max_depth": [6, 8, 10, None],
              "min_samples_leaf": [10, 15, 25], "max_features": [0.5, 0.6, 0.8]}
-        ),
-        "GradientBoosting": (
-            GradientBoostingClassifier(random_state=42),
-            {"n_estimators": [100, 200], "max_depth": [3, 4, 5],
-             "learning_rate": [0.03, 0.05, 0.1], "subsample": [0.7, 0.8, 1.0],
-             "min_samples_leaf": [5, 10]}
         ),
         "LogisticRegression": (
             LogisticRegression(max_iter=500, random_state=42),

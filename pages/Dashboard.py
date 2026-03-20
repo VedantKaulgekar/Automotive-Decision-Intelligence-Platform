@@ -343,13 +343,24 @@ with tab1:
 
     col1, col2 = st.columns(2)
     with col1:
-        en_load = st.slider("Production Load (%)", 30, 100, 80, key="en_load") / 100
+        en_load  = st.slider("Production Load (%)", 30, 100, 80, key="en_load") / 100
         en_cycle = st.slider("Cycle Time (s)", 10, 90, 40, key="en_cycle")
     with col2:
-        en_temp = st.slider("Machine Temperature (°C)", 20, 120, 60, key="en_temp")
+        en_temp  = st.slider("Machine Temperature (°C)", 20, 120, 60, key="en_temp")
         en_speed = st.slider("Axis Speed (m/s)", 0.2, 3.0, 1.2, key="en_speed")
 
-    energy = energy_model.predict(en_load, en_cycle, en_temp, en_speed)
+    with st.expander("⚙️ Advanced Parameters", expanded=False):
+        adv1, adv2 = st.columns(2)
+        with adv1:
+            en_tool_wear  = st.slider("Tool Wear (0–1)", 0.0, 1.0, 0.5, 0.01, key="en_tool_wear")
+            en_humidity   = st.slider("Ambient Humidity (%)", 10.0, 90.0, 50.0, 1.0, key="en_humidity")
+        with adv2:
+            en_vibration  = st.slider("Vibration Level", 0.5, 5.0, 1.0, 0.1, key="en_vibration")
+            en_pf         = st.slider("Power Factor (0–1)", 0.5, 1.0, 0.9, 0.01, key="en_pf")
+
+    energy = energy_model.predict(en_load, en_cycle, en_temp, en_speed,
+                                   tool_wear=en_tool_wear, ambient_humidity=en_humidity,
+                                   vibration_level=en_vibration, power_factor=en_pf)
 
     if energy:
         cost = predict_cost(energy, price_rate=price_rate)
@@ -719,13 +730,21 @@ with tab2:
 
     col1, col2 = st.columns(2)
     with col1:
-        ef_load = st.slider("Load (%)", 30, 100, 80, key="ef_load") / 100
-        ef_cycle = st.slider("Cycle Time", 10, 90, 40, key="ef_cycle")
+        ef_load  = st.slider("Load (%)", 30, 100, 80, key="ef_load") / 100
+        ef_cycle = st.slider("Cycle Time (s)", 10, 90, 40, key="ef_cycle")
     with col2:
-        ef_temp = st.slider("Temperature", 20, 120, 60, key="ef_temp")
-        ef_speed = st.slider("Axis Speed", 0.2, 3.0, 1.2, key="ef_speed")
+        ef_temp  = st.slider("Temperature (°C)", 20, 120, 60, key="ef_temp")
+        ef_speed = st.slider("Axis Speed (m/s)", 0.2, 3.0, 1.2, key="ef_speed")
 
-    pred_eff = eff_model.predict(ef_load, ef_cycle, ef_temp, ef_speed)
+    with st.expander("⚙️ Advanced Parameters", expanded=False):
+        adv1, adv2 = st.columns(2)
+        with adv1:
+            ef_vibration = st.slider("Vibration Signal", 0.5, 5.0, 1.0, 0.1, key="ef_vibration")
+        with adv2:
+            ef_pf        = st.slider("Power Factor (0–1)", 0.5, 1.0, 0.9, 0.01, key="ef_pf")
+
+    pred_eff = eff_model.predict(ef_load, ef_cycle, ef_temp, ef_speed,
+                                  vibration_signal=ef_vibration, power_factor=ef_pf)
     st.metric("Predicted Class", pred_eff)
 
     # Visuals
@@ -839,13 +858,19 @@ with tab3:
 
     col1, col2 = st.columns(2)
     with col1:
-        em_load = st.slider("Load (%)", 30, 100, 80, key="em_load") / 100
-        em_cycle = st.slider("Cycle Time", 10, 90, 40, key="em_cycle")
+        em_load  = st.slider("Load (%)", 30, 100, 80, key="em_load") / 100
+        em_cycle = st.slider("Cycle Time (s)", 10, 90, 40, key="em_cycle")
     with col2:
-        em_temp = st.slider("Temperature", 20, 120, 60, key="em_temp")
-        em_speed = st.slider("Axis Speed", 0.2, 3.0, 1.2, key="em_speed")
+        em_temp  = st.slider("Temperature (°C)", 20, 120, 60, key="em_temp")
+        em_speed = st.slider("Axis Speed (m/s)", 0.2, 3.0, 1.2, key="em_speed")
 
-    pred_em = emiss_model.predict(em_load, em_cycle, em_temp, em_speed)
+    with st.expander("⚙️ Advanced Parameters", expanded=False):
+        _, adv_mid, _ = st.columns([1, 2, 1])
+        with adv_mid:
+            em_pf = st.slider("Power Factor (0–1)", 0.5, 1.0, 0.9, 0.01, key="em_pf")
+
+    pred_em = emiss_model.predict(em_load, em_cycle, em_temp, em_speed,
+                                   power_factor=em_pf)
     st.metric("Emission Class", pred_em)
 
     # Visuals
@@ -967,13 +992,24 @@ with tab4:
 
     col1, col2 = st.columns(2)
     with col1:
-        m_load = st.slider("Load (%)", 30, 100, 80, key="m_load") / 100
-        m_cycle = st.slider("Cycle Time", 10, 90, 40, key="m_cycle")
+        m_load  = st.slider("Load (%)", 30, 100, 80, key="m_load") / 100
+        m_cycle = st.slider("Cycle Time (s)", 10, 90, 40, key="m_cycle")
     with col2:
-        m_temp = st.slider("Temperature", 20, 120, 60, key="m_temp")
-        m_speed = st.slider("Speed", 0.2, 3.0, 1.2, key="m_speed")
+        m_temp  = st.slider("Temperature (°C)", 20, 120, 60, key="m_temp")
+        m_speed = st.slider("Speed (m/s)", 0.2, 3.0, 1.2, key="m_speed")
 
-    pred_m = maint_model.predict(m_load, m_cycle, m_temp, m_speed)
+    with st.expander("⚙️ Advanced Parameters", expanded=False):
+        adv1, adv2 = st.columns(2)
+        with adv1:
+            m_vibration  = st.slider("Vibration Level", 0.5, 5.0, 1.0, 0.1, key="m_vibration")
+            m_tool_wear  = st.slider("Tool Wear (0–1)", 0.0, 1.0, 0.5, 0.01, key="m_tool_wear")
+        with adv2:
+            m_oil        = st.slider("Oil Quality (0–1)", 0.0, 1.0, 0.7, 0.01, key="m_oil")
+            m_pressure   = st.slider("Pressure", 50.0, 200.0, 100.0, 1.0, key="m_pressure")
+
+    pred_m = maint_model.predict(m_load, m_cycle, m_temp, m_speed,
+                                  vibration_level=m_vibration, tool_wear=m_tool_wear,
+                                  oil_quality=m_oil, pressure=m_pressure)
     st.metric("Maintenance Risk", pred_m)
 
     # Visuals
